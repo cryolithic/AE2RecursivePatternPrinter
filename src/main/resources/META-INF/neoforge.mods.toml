@@ -1,0 +1,35 @@
+modLoader = "javafml"
+loaderVersion = "[4,)"
+license = "MIT"
+
+[[mods]]
+modId = "rpp"
+version = "0.1.0"
+displayName = "Recursive Pattern Printer"
+authors = "cryolithic"
+description = '''
+A block that turns an encoded AE2 pattern into a tree of every recipe that
+can produce it, lets the player choose the legitimate sources, and prints
+the chosen set into blank patterns in one action.
+'''
+
+[[dependencies.rpp]]
+modId = "neoforge"
+type = "required"
+versionRange = "[21.1.217,)"
+ordering = "NONE"
+side = "BOTH"
+
+[[dependencies.rpp]]
+modId = "minecraft"
+type = "required"
+versionRange = "[1.21.1,1.22)"
+ordering = "NONE"
+side = "BOTH"
+
+[[dependencies.rpp]]
+modId = "ae2"
+type = "required"
+versionRange = "[19.2.17,)"
+ordering = "AFTER"
+side = "BOTH"

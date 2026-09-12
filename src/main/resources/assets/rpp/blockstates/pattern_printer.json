@@ -1,0 +1,8 @@
+{
+  "variants": {
+    "facing=north": { "model": "rpp:block/pattern_printer" },
+    "facing=south": { "model": "rpp:block/pattern_printer", "y": 180, "uvlock": true },
+    "facing=west": { "model": "rpp:block/pattern_printer", "y": 270, "uvlock": true },
+    "facing=east": { "model": "rpp:block/pattern_printer", "y": 90, "uvlock": true }
+  }
+}

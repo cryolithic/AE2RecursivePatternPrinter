@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Test-only log4j2 configuration: keeps the root level and per-logger
+     levels stable in the bare-JVM test runtime (without it, log4j2 falls
+     back to an empty default configuration whose root level is ALL and
+     which resets programmatically-set logger levels on reconfiguration). -->
+<Configuration status="OFF">
+    <Appenders>
+        <Console name="Console" target="SYSTEM_ERR"/>
+    </Appenders>
+    <Loggers>
+        <Root level="INFO">
+            <AppenderRef ref="Console"/>
+        </Root>
+    </Loggers>
+</Configuration>

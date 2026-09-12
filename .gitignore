@@ -1,0 +1,26 @@
+# Gradle
+.gradle/
+build/
+out/
+
+# NeoForge / ModDev dev environments
+run/
+neoforge/
+logs/
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.zcode/
+.claude/
+.settings/
+.classpath
+.project
+.bin/
+
+# OS
+.DS_Store
+Thumbs.db

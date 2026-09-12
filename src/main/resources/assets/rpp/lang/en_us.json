@@ -1,0 +1,52 @@
+{
+  "block.rpp.pattern_printer": "Recursive Pattern Printer",
+  "item.rpp.pattern_printer": "Recursive Pattern Printer",
+  "menu.rpp.pattern_printer": "Recursive Pattern Printer",
+
+  "rpp.gui.select_all": "✔ all",
+  "rpp.gui.deselect_all": "✘ all",
+  "rpp.gui.clear_sticky": "clear all",
+  "rpp.gui.print": "Print",
+  "rpp.gui.search": "Search items and recipes…",
+  "rpp.gui.no_pattern": "Place an encoded pattern in the input slot",
+  "rpp.gui.patterns": "patterns",
+  "rpp.gui.blanks": "blanks",
+  "rpp.gui.more": "+%d more",
+  "rpp.gui.banner.capped": "Node limit reached — further expansion is disabled",
+
+  "rpp.gui.menu.select_all": "Select all",
+  "rpp.gui.menu.deselect_all": "Deselect all",
+  "rpp.gui.menu.reset_defaults": "Reset to defaults",
+  "rpp.gui.menu.raw_input": "Supply as raw input",
+  "rpp.gui.menu.forget_sticky": "Forget this choice",
+
+  "rpp.gui.summary.collapsed": "%d steps, %d patterns, %s",
+  "rpp.gui.summary.collapsed_partial": "%d steps, %d patterns",
+  "rpp.gui.summary.all_forced": "all forced",
+
+  "rpp.gui.result.rejected": "Rejected: %s",
+  "rpp.gui.result.partial": "%d printed, %d skipped",
+  "rpp.gui.result.ok": "%d printed",
+
+  "rpp.gui.review.title": "Print %d patterns from %d blanks",
+  "rpp.gui.review.back": "Back",
+  "rpp.gui.review.confirm": "Confirm",
+  "rpp.gui.review.source": "1 source",
+  "rpp.gui.review.sources": "%d sources",
+  "rpp.gui.review.raw_input": "raw input",
+  "rpp.gui.review.raw_input_tip": "Supplied from storage, not printed",
+
+  "rpp.gui.tip.craftability": "Craftability: %s",
+  "rpp.gui.tip.type": "Type: %s",
+  "rpp.gui.tip.yield": "Yield: %s",
+  "rpp.gui.tip.destination": "Destination: %s",
+  "rpp.gui.tip.rejected": "Rejected: %s",
+  "rpp.gui.tip.untrusted": "Untrusted: heuristically extracted",
+
+  "rpp.gui.title_tip": "Recipes are discovered from the vanilla recipe manager; AE2's own crafting providers are not consulted.\nThis mod prints the right set — you rank the sources via your pattern provider priority.",
+
+  "rpp.count.patterns": "%s patterns",
+  "rpp.count.blanks": "%s blanks",
+  "rpp.count.sources": "%s sources",
+  "rpp.count.none": "0"
+}

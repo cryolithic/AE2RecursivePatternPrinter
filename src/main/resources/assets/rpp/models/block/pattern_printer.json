@@ -1,0 +1,24 @@
+{
+  "parent": "block/block",
+  "textures": {
+    "particle": "rpp:block/pattern_printer",
+    "side": "rpp:block/pattern_printer_side",
+    "front": "rpp:block/pattern_printer",
+    "top": "rpp:block/pattern_printer_side",
+    "bottom": "rpp:block/pattern_printer_side"
+  },
+  "elements": [
+    {
+      "from": [0, 0, 0],
+      "to": [16, 16, 16],
+      "faces": {
+        "down": { "texture": "#bottom", "cullface": "bottom" },
+        "up": { "texture": "#top", "cullface": "up" },
+        "north": { "texture": "#front" },
+        "south": { "texture": "#side" },
+        "west": { "texture": "#side" },
+        "east": { "texture": "#side" }
+      }
+    }
+  ]
+}
