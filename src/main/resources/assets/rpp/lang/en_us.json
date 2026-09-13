@@ -1,6 +1,7 @@
 {
   "block.rpp.pattern_printer": "Recursive Pattern Printer",
   "item.rpp.pattern_printer": "Recursive Pattern Printer",
+  "itemGroup.rpp.pattern_printer": "Recursive Pattern Printer",
   "menu.rpp.pattern_printer": "Recursive Pattern Printer",
 
   "rpp.gui.select_all": "✔ all",
@@ -9,6 +10,7 @@
   "rpp.gui.print": "Print",
   "rpp.gui.search": "Search items and recipes…",
   "rpp.gui.no_pattern": "Place an encoded pattern in the input slot",
+  "rpp.gui.index_building": "Building recipe index…",
   "rpp.gui.patterns": "patterns",
   "rpp.gui.blanks": "blanks",
   "rpp.gui.more": "+%d more",
@@ -25,6 +27,7 @@
   "rpp.gui.summary.all_forced": "all forced",
 
   "rpp.gui.result.rejected": "Rejected: %s",
+  "rpp.gui.result.batch_cap": "batch cap of %d patterns exceeded",
   "rpp.gui.result.partial": "%d printed, %d skipped",
   "rpp.gui.result.ok": "%d printed",
 
@@ -34,6 +37,15 @@
   "rpp.gui.review.source": "1 source",
   "rpp.gui.review.sources": "%d sources",
   "rpp.gui.review.raw_input": "raw input",
+
+  "rpp.gui.review.count.untrusted": "%d untrusted",
+  "rpp.gui.review.count.reversal": "%d reversal",
+  "rpp.gui.review.count.reversals": "%d reversals",
+  "rpp.gui.review.count.collision": "%d collision",
+  "rpp.gui.review.count.collisions": "%d collisions",
+  "rpp.gui.review.count.rejected": "%d rejected",
+  "rpp.gui.review.count.raw": "%d raw input",
+  "rpp.gui.review.count.raws": "%d raw inputs",
   "rpp.gui.review.raw_input_tip": "Supplied from storage, not printed",
 
   "rpp.gui.tip.craftability": "Craftability: %s",
@@ -41,12 +53,8 @@
   "rpp.gui.tip.yield": "Yield: %s",
   "rpp.gui.tip.destination": "Destination: %s",
   "rpp.gui.tip.rejected": "Rejected: %s",
+  "rpp.gui.tip.over_cap": "⚠ %d sources checked — above the %d default. Each extra source slows crafting calculations.",
   "rpp.gui.tip.untrusted": "Untrusted: heuristically extracted",
 
-  "rpp.gui.title_tip": "Recipes are discovered from the vanilla recipe manager; AE2's own crafting providers are not consulted.\nThis mod prints the right set — you rank the sources via your pattern provider priority.",
-
-  "rpp.count.patterns": "%s patterns",
-  "rpp.count.blanks": "%s blanks",
-  "rpp.count.sources": "%s sources",
-  "rpp.count.none": "0"
+  "rpp.gui.title_tip": "Recipes are discovered from the vanilla recipe manager; AE2's own crafting providers are not consulted.\nThis mod prints the right set — you rank the sources via your pattern provider priority."
 }

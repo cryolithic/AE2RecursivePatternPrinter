@@ -18,7 +18,7 @@ import net.neoforged.neoforge.registries.DeferredRegister;
  * {@code @EventBusSubscriber} rather than in the mod constructor, which is
  * frozen.</p>
  */
-@EventBusSubscriber(modid = RppMod.MOD_ID, bus = EventBusSubscriber.Bus.MOD)
+@EventBusSubscriber(modid = RppMod.MOD_ID)
 public final class RppBlockEntities {
     public static final DeferredRegister<BlockEntityType<?>> BLOCK_ENTITIES =
             DeferredRegister.create(Registries.BLOCK_ENTITY_TYPE, RppMod.MOD_ID);

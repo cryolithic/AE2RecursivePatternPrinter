@@ -7,6 +7,7 @@ modId = "rpp"
 version = "0.1.0"
 displayName = "Recursive Pattern Printer"
 authors = "cryolithic"
+iconFile = "assets/rpp/icon.png"
 description = '''
 A block that turns an encoded AE2 pattern into a tree of every recipe that
 can produce it, lets the player choose the legitimate sources, and prints
@@ -16,7 +17,7 @@ the chosen set into blank patterns in one action.
 [[dependencies.rpp]]
 modId = "neoforge"
 type = "required"
-versionRange = "[21.1.217,)"
+versionRange = "[21.1.217,22)"
 ordering = "NONE"
 side = "BOTH"
 
@@ -30,6 +31,6 @@ side = "BOTH"
 [[dependencies.rpp]]
 modId = "ae2"
 type = "required"
-versionRange = "[19.2.17,)"
+versionRange = "[19.2.17,20)"
 ordering = "AFTER"
 side = "BOTH"

@@ -1,0 +1,16 @@
+{
+  "type": "minecraft:crafting",
+  "category": "redstone",
+  "key": {
+    "p": { "item": "ae2:blank_pattern" },
+    "l": { "item": "ae2:logic_processor" }
+  },
+  "pattern": [
+    "p p p",
+    "p l p",
+    "p p p"
+  ],
+  "result": {
+    "item": "rpp:pattern_printer"
+  }
+}

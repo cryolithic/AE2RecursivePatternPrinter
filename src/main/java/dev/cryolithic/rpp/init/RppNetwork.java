@@ -8,7 +8,9 @@ import dev.cryolithic.rpp.inventory.PatternPrinterMenu;
 import dev.cryolithic.rpp.net.PrintRequestPayload;
 import dev.cryolithic.rpp.net.PrintResultPayload;
 import net.minecraft.server.level.ServerPlayer;
+import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.IEventBus;
+import net.neoforged.fml.loading.FMLEnvironment;
 import net.neoforged.neoforge.client.event.RegisterMenuScreensEvent;
 import net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent;
 import net.neoforged.neoforge.network.handling.IPayloadContext;
@@ -24,7 +26,10 @@ import org.jetbrains.annotations.Nullable;
  *
  * <p>The screen factory and the result sink are client-only; they are
  * referenced only from code paths that run on the client (the mod-bus screen
- * event and the S2C handler), so the server never loads them.</p>
+ * event and the S2C handler), so the server never loads them. The screen
+ * event and the sticky-persistence wiring are client-only registrations, so
+ * they are only added when the dist is {@code CLIENT} (resolving their
+ * event classes would fail on a dedicated server).</p>
  */
 public final class RppNetwork {
     private RppNetwork() {
@@ -32,9 +37,15 @@ public final class RppNetwork {
 
     public static void register(IEventBus modBus) {
         modBus.addListener(RppNetwork::onRegisterPayloadHandlers);
-        modBus.addListener(RppNetwork::onRegisterMenuScreens);
-        // Client-side sticky-choice file load (DESIGN.md §8.7).
-        StickyPersistence.init(modBus);
+        // RegisterMenuScreensEvent is a client-only mod-bus event and
+        // StickyPersistence wires client-only game-bus events; on a
+        // dedicated server neither class may even be resolved, so both
+        // registrations are client-only.
+        if (FMLEnvironment.dist == Dist.CLIENT) {
+            modBus.addListener(RppNetwork::onRegisterMenuScreens);
+            // Client-side sticky-choice file load (DESIGN.md §8.7).
+            StickyPersistence.init(modBus);
+        }
     }
 
     /** Registers the container screen for the pattern printer menu (client only). */

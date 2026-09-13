@@ -24,6 +24,7 @@ public final class RppMod {
     public RppMod(IEventBus modBus, ModContainer container) {
         RppBlocks.BLOCKS.register(modBus);
         RppItems.ITEMS.register(modBus);
+        RppItems.CREATIVE_MODE_TABS.register(modBus);
         RppBlockEntities.BLOCK_ENTITIES.register(modBus);
         RppMenus.MENUS.register(modBus);
         RppNetwork.register(modBus);
