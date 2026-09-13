@@ -13,6 +13,8 @@ import java.util.Map;
 import java.util.Objects;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.item.Item;
+import net.minecraft.world.item.ItemStack;
+import org.jetbrains.annotations.Nullable;
 
 /**
  * One-level round-trip detection (DESIGN.md §8.4.2). For a candidate
@@ -22,7 +24,10 @@ import net.minecraft.world.item.Item;
  * At or above {@code minRoundTripEfficiency} the reversal is a lossless
  * storage form; below it, recycling.
  *
- * <p>Detection is one level deep and memoized per (goal, input) pair. The
+ * <p>Detection is one level deep and memoized per (goal, input, output
+ * amount) triple: the efficiency formula is candidate-specific through the
+ * candidate's own output amount, so two candidates sharing a (goal, input)
+ * pair but producing different amounts must not share a memo entry. The
  * first forward recipe in index order that consumes the goal and produces
  * the input wins, which keeps the result deterministic.</p>
  *
@@ -39,7 +44,7 @@ public final class ReversalDetector {
         Collection<ResourceLocation> tagsFor(Item item);
     }
 
-    private record Key(AEKey goal, Item input) {}
+    private record Key(AEKey goal, Item input, long outputAmount) {}
 
     private record Reversal(double efficiency, boolean extraInputs) {}
 
@@ -65,50 +70,22 @@ public final class ReversalDetector {
             return Double.NaN;
         }
         Item goalItem = goalKey.getItem();
-        if (candidate.inputs().size() != 1 || candidate.outputs().isEmpty()) {
+        if (candidate.outputs().isEmpty()) {
             return Double.NaN;
         }
-        IngredientView input = candidate.inputs().get(0);
-        if (input.candidates().isEmpty()) {
+        IngredientView input = singleInput(candidate);
+        if (input == null || input.candidates().isEmpty()) {
             return Double.NaN;
         }
         Item inputItem = input.candidates().get(0);
 
-        Key key = new Key(goal, inputItem);
+        Key key = new Key(goal, inputItem, candidate.outputs().get(0).amount());
         Reversal cached = memo.get(key);
         if (cached == null) {
             cached = compute(goalItem, inputItem, candidate);
             memo.put(key, cached);
         }
         return cached.efficiency();
-    }
-
-    /**
-     * True when the reversal's forward recipe consumes inputs other than the
-     * goal (DESIGN.md §8.4.2: caps the tier at ALTERNATE and strengthens a
-     * below-threshold REJECTED). False when the candidate is not a reversal.
-     */
-    public boolean consumesExtraInputs(AEKey goal, RecipeView candidate) {
-        if (!(goal instanceof AEItemKey goalKey)) {
-            return false;
-        }
-        Item goalItem = goalKey.getItem();
-        if (candidate.inputs().size() != 1 || candidate.outputs().isEmpty()) {
-            return false;
-        }
-        IngredientView input = candidate.inputs().get(0);
-        if (input.candidates().isEmpty()) {
-            return false;
-        }
-        Item inputItem = input.candidates().get(0);
-
-        Key key = new Key(goal, inputItem);
-        Reversal cached = memo.get(key);
-        if (cached == null) {
-            cached = compute(goalItem, inputItem, candidate);
-            memo.put(key, cached);
-        }
-        return !Double.isNaN(cached.efficiency()) && cached.extraInputs();
     }
 
     private Reversal compute(Item goalItem, Item inputItem, RecipeView candidate) {
@@ -130,13 +107,27 @@ public final class ReversalDetector {
             long goalUnits = 0;
             boolean extras = false;
             for (IngredientView fin : forward.inputs()) {
+                if (fin.isEmpty()) {
+                    continue; // blank grid slot: consumes nothing, no extra
+                }
                 if (fin.candidates().isEmpty()) {
                     extras = true;
                     continue;
                 }
-                if (fin.candidates().get(0) == goalItem) {
-                    goalUnits++;
-                } else {
+                // Goal units are counted in item counts, not slots: a
+                // count-9 goal ingredient consumes nine goal units, and any
+                // non-goal stack in the slot is an extra input.
+                long slotGoalUnits = 0;
+                boolean slotHasOther = false;
+                for (ItemStack stack : fin.ingredient().getItems()) {
+                    if (stack.getItem() == goalItem) {
+                        slotGoalUnits += stack.getCount();
+                    } else {
+                        slotHasOther = true;
+                    }
+                }
+                goalUnits += slotGoalUnits;
+                if (slotHasOther) {
                     extras = true;
                 }
             }
@@ -146,6 +137,27 @@ public final class ReversalDetector {
             return new Reversal((double) n / ((double) k * (double) goalUnits), extras);
         }
         return new Reversal(Double.NaN, false);
+    }
+
+    /**
+     * The single non-blank input slot of a one-input recipe, or null when
+     * the recipe has zero or more than one real inputs. Blank grid slots
+     * ({@code Ingredient.EMPTY}) are not inputs: a shaped recipe pads its
+     * grid, and the padding must not count against the one-input rule.
+     */
+    @Nullable
+    private static IngredientView singleInput(RecipeView view) {
+        IngredientView found = null;
+        for (IngredientView input : view.inputs()) {
+            if (input.isEmpty()) {
+                continue; // blank grid slot: not an input
+            }
+            if (found != null) {
+                return null; // more than one real input
+            }
+            found = input;
+        }
+        return found;
     }
 
     private boolean storageTagLossless(Item input, Item goal) {

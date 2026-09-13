@@ -15,7 +15,6 @@ public final class RppConfig {
 
     // --- client: tree building and display ---
     public static final ModConfigSpec.IntValue INITIAL_DEPTH;
-    public static final ModConfigSpec.BooleanValue REQUIRE_TRUSTED_RECIPES;
     public static final ModConfigSpec.ConfigValue<List<? extends String>> PREFERRED_MODS;
     public static final ModConfigSpec.DoubleValue MIN_ROUND_TRIP_EFFICIENCY;
     public static final ModConfigSpec.BooleanValue ALTERNATES_CONSERVATIVE;
@@ -25,7 +24,6 @@ public final class RppConfig {
     public static final ModConfigSpec.BooleanValue GROUP_PRINT_BY_DESTINATION;
     public static final ModConfigSpec.BooleanValue STICKY_CHOICES;
     public static final ModConfigSpec.BooleanValue ALWAYS_REVIEW_BEFORE_PRINT;
-    public static final ModConfigSpec.ConfigValue<List<? extends String>> BLACKLISTED_RECIPE_TYPES;
 
     // --- client: the five §8.3 caps ---
     public static final ModConfigSpec.IntValue MAX_DEPTH;
@@ -37,6 +35,9 @@ public final class RppConfig {
     // --- common: print limits and trust ---
     public static final ModConfigSpec.IntValue MAX_PRINT_BATCH;
     public static final ModConfigSpec.BooleanValue ALLOW_SUBSTITUTIONS;
+    public static final ModConfigSpec.BooleanValue ALLOW_FLUID_SUBSTITUTIONS;
+    public static final ModConfigSpec.BooleanValue REQUIRE_TRUSTED_RECIPES;
+    public static final ModConfigSpec.ConfigValue<List<? extends String>> BLACKLISTED_RECIPE_TYPES;
 
     static {
         ModConfigSpec.Builder builder = new ModConfigSpec.Builder();
@@ -46,10 +47,6 @@ public final class RppConfig {
         INITIAL_DEPTH = builder
                 .comment("Levels of the recipe tree expanded when the GUI opens.")
                 .defineInRange("initialDepth", 2, 1, 16);
-
-        REQUIRE_TRUSTED_RECIPES = builder
-                .comment("Hide heuristically-extracted (untrusted) recipes entirely.")
-                .define("requireTrustedRecipes", false);
 
         PREFERRED_MODS = builder
                 .comment("Ordered list of namespaces the player actually builds with; "
@@ -93,12 +90,6 @@ public final class RppConfig {
         ALWAYS_REVIEW_BEFORE_PRINT = builder
                 .comment("Show the pre-print review even when nothing is flagged.")
                 .define("alwaysReviewBeforePrint", true);
-        BLACKLISTED_RECIPE_TYPES = builder
-                .comment("Recipe types never indexed, e.g. \"minecraft:crafting\".")
-                .defineList("blacklistedRecipeTypes",
-                        List.<String>of(),
-                        () -> "minecraft",
-                        o -> o instanceof String);
 
         builder.pop();
 
@@ -138,6 +129,21 @@ public final class RppConfig {
         ALLOW_SUBSTITUTIONS = common
                 .comment("Default for the GUI substitution toggle, applied globally to a batch.")
                 .define("allowSubstitutions", true);
+
+        ALLOW_FLUID_SUBSTITUTIONS = common
+                .comment("Default for the GUI fluid-substitution toggle, applied globally to a batch.")
+                .define("allowFluidSubstitutions", false);
+
+        REQUIRE_TRUSTED_RECIPES = common
+                .comment("Hide heuristically-extracted (untrusted) recipes entirely.")
+                .define("requireTrustedRecipes", false);
+
+        BLACKLISTED_RECIPE_TYPES = common
+                .comment("Recipe types never indexed, e.g. \"minecraft:crafting\".")
+                .defineList("blacklistedRecipeTypes",
+                        List.<String>of(),
+                        () -> "minecraft",
+                        o -> o instanceof String);
 
         common.pop();
         COMMON_SPEC = common.build();
@@ -222,5 +228,9 @@ public final class RppConfig {
 
     public static boolean allowSubstitutions() {
         return ALLOW_SUBSTITUTIONS.get();
+    }
+
+    public static boolean allowFluidSubstitutions() {
+        return ALLOW_FLUID_SUBSTITUTIONS.get();
     }
 }

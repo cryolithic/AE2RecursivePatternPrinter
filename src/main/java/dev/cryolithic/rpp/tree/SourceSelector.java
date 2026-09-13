@@ -18,6 +18,7 @@ import java.util.Set;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.item.Item;
+import net.minecraft.world.item.ItemStack;
 import org.jetbrains.annotations.Nullable;
 
 import static dev.cryolithic.rpp.tree.Tier.ALTERNATE;
@@ -85,7 +86,7 @@ public final class SourceSelector {
     }
 
     /**
-     * Assign tier, destination, score, oracle depth, and rejection reason to
+     * Assign tier, destination, oracle depth, and rejection reason to
      * the node's recipes, then compute the default selection and the forced
      * flag. Called by the builder after the RecipeNodes are created.
      */
@@ -98,9 +99,8 @@ public final class SourceSelector {
         for (RecipeNode r : recipes) {
             r.setDestination(destination(r.recipe()));
             r.setOracleDepth(Math.max(0, inputDepth(node, r.recipe(), budget)));
-            r.setScore(scoreOf(node, r, budget));
         }
-        assignTiers(node, recipes, budget);
+        assignTiers(node, recipes);
         applyDefaults(node);
     }
 
@@ -174,6 +174,18 @@ public final class SourceSelector {
                 continue;
             }
             if (r.tier() == PRIMARY) {
+                // The PRIMARY is subject to the same caps as the ALTERNATEs:
+                // a higher-ranked ALTERNATE in the same destination class (e.g.
+                // a lossless reversal with a namespace match) keeps its default
+                // check, and the per-item cap still binds. §8.4.1/§17.7.3: at
+                // most one candidate is checked by default within each class.
+                if (checked >= config.maxSourcesPerItem()) {
+                    continue;
+                }
+                int inDestination = perDestination.getOrDefault(r.destination(), 0);
+                if (inDestination >= config.maxSourcesPerDestination()) {
+                    continue;
+                }
                 node.select(i);
                 checked++;
                 perDestination.merge(r.destination(), 1, Integer::sum);
@@ -195,6 +207,29 @@ public final class SourceSelector {
 
     /** The destination a printed pattern physically goes to (DESIGN.md §17.7.2). */
     public static Destination destination(RecipeView view) {
+        // The registry key is the authoritative identity of the type: every
+        // registered type resolves, including mod types whose RecipeType
+        // implementation does not override toString() — whose identity hash
+        // would otherwise leak into the destination and change every JVM run.
+        ResourceLocation id = BuiltInRegistries.RECIPE_TYPE.getKey(view.type());
+        if (id != null) {
+            String path = id.getPath();
+            if ("crafting".equals(path)) {
+                return Destination.assembler();
+            }
+            if ("stonecutting".equals(path)) {
+                return Destination.stonecutter();
+            }
+            if ("smithing".equals(path)) {
+                return Destination.smithing();
+            }
+            return Destination.machine(path);
+        }
+        // Unregistered type: the registry holds no key, so fall back to the
+        // legacy toString-based classification (better a guess than a crash).
+        // In practice every shipped recipe type is registered — the vanilla
+        // bootstrap and RecipeType.register both write into RECIPE_TYPE — so
+        // this path mainly serves unregistered test fixtures.
         String type = view.type().toString();
         // The type location may or may not carry its namespace (vanilla
         // crafting recipes report "crafting" in this mapping), so match on
@@ -214,7 +249,7 @@ public final class SourceSelector {
 
     // --- tiering ---
 
-    private void assignTiers(ItemNode node, List<RecipeNode> recipes, int budget) {
+    private void assignTiers(ItemNode node, List<RecipeNode> recipes) {
         // First pass: rejection reasons and reversal classification.
         for (RecipeNode r : recipes) {
             double efficiency = r.roundTripEfficiency();
@@ -230,7 +265,7 @@ public final class SourceSelector {
                 reason = "inputs may be incomplete";
             } else if (isSelfReferential(node, r)) {
                 reason = "consumes the item it produces";
-            } else if (isDeadEndInput(r, budget)) {
+            } else if (isDeadEndInput(r)) {
                 reason = "requires an item with no source";
             }
 
@@ -300,15 +335,19 @@ public final class SourceSelector {
         return false;
     }
 
-    private boolean isDeadEndInput(RecipeNode r, int budget) {
+    private boolean isDeadEndInput(RecipeNode r) {
         for (IngredientView input : r.recipe().inputs()) {
+            if (input.isEmpty()) {
+                continue; // blank grid slot: consumes nothing, no constraint
+            }
             if (input.candidates().isEmpty()) {
-                return true; // no candidate at all: cannot verify
+                return true; // no candidate at all: a true dead end, no source
             }
-            Item candidate = input.candidates().get(0);
-            if (oracle.check(AEItemKey.of(candidate), budget) == Craftability.UNKNOWN) {
-                return true; // no source within budget; LEAF (raw input) is fine
-            }
+            // An input whose oracle verdict is UNKNOWN (budget exhaustion) is
+            // not a dead end: the item has a source, the bounded search just
+            // ran out of depth. AE2 can craft deeper than the tree's display
+            // cap, so the pattern is still valid. A LEAF (no recipe) is a raw
+            // input, which is fine too.
         }
         return false;
     }
@@ -322,8 +361,19 @@ public final class SourceSelector {
 
     private static double yieldPerInput(RecipeNode r) {
         long output = r.recipe().outputs().isEmpty() ? 0 : r.recipe().outputs().get(0).amount();
-        int inputs = Math.max(1, r.recipe().inputs().size());
-        return (double) output / inputs;
+        long items = 0;
+        for (IngredientView input : r.recipe().inputs()) {
+            if (input.isEmpty()) {
+                continue; // blank grid slots consume nothing; they are not inputs
+            }
+            // Per item, not per slot: a count-9 slot consumes nine items, and
+            // a tag slot offers one of each member. The vanilla ingredient
+            // carries the slot's stacks with their counts.
+            for (ItemStack stack : input.ingredient().getItems()) {
+                items += stack.getCount();
+            }
+        }
+        return (double) output / Math.max(1L, items);
     }
 
     private boolean inPreferredNamespace(RecipeNode r) {
@@ -385,21 +435,31 @@ public final class SourceSelector {
     }
 
     private static boolean isVanilla(net.minecraft.world.item.crafting.RecipeType<?> type) {
-        String t = type.toString();
-        int colon = t.lastIndexOf(':');
-        // A bare path (no namespace) is a vanilla built-in type in this
-        // mapping (e.g. "crafting"); otherwise the namespace must be minecraft.
-        return colon < 0 || t.substring(0, colon).equals("minecraft");
+        // The registry key is the authoritative identity. A null lookup
+        // (unregistered type) fails safe to NOT vanilla: the old "no colon
+        // means vanilla" heuristic fired on identity-hash toStrings (e.g.
+        // "com.foo.Bar$1@6f2b958e") and handed modded recipes the vanilla
+        // rank and the +25 score bonus.
+        ResourceLocation id = BuiltInRegistries.RECIPE_TYPE.getKey(type);
+        return id != null && "minecraft".equals(id.getNamespace());
     }
 
     private int inputDepth(ItemNode node, RecipeView view, int budget) {
         int max = 0;
         for (IngredientView input : view.inputs()) {
+            if (input.isEmpty()) {
+                continue; // blank grid slot: consumes nothing, no constraint
+            }
             if (input.candidates().isEmpty()) {
                 continue;
             }
             Item candidate = input.candidates().get(0);
-            max = Math.max(max, Math.max(0, oracle.depth(AEItemKey.of(candidate), budget)));
+            int d = oracle.depth(AEItemKey.of(candidate), budget);
+            // UNKNOWN (budget exhaustion) means the input needs MORE than the
+            // remaining budget: strictly deeper than any verified input, never
+            // shallower. Clamping it to 0 would invert rank #5 and make deep
+            // unknown inputs look cheap in the collision-cost comparison.
+            max = Math.max(max, d < 0 ? budget + 1 : d);
         }
         return max;
     }
@@ -410,27 +470,6 @@ public final class SourceSelector {
             items.addAll(input.candidates());
         }
         return items.size();
-    }
-
-    private double scoreOf(ItemNode node, RecipeNode r, int budget) {
-        double score = 0;
-        if (stickyIds(node.goal()).contains(r.recipe().id())) {
-            score += 1000;
-        }
-        String goalNamespace = namespaceOf(node.goal());
-        if (goalNamespace != null && r.recipe().id().getNamespace().equals(goalNamespace)) {
-            score += 100;
-        }
-        int preferred = preferredRank(r.recipe().id().getNamespace());
-        if (preferred != Integer.MAX_VALUE) {
-            score += 50 - preferred;
-        }
-        if (isVanilla(r.recipe().type())) {
-            score += 25;
-        }
-        score += Math.max(0, 10 - inputDepth(node, r.recipe(), budget));
-        score += Math.max(0, 5 - distinctInputs(r.recipe()));
-        return score;
     }
 
     // --- helpers ---

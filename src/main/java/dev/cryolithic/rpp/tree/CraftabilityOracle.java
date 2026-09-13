@@ -89,6 +89,9 @@ public final class CraftabilityOracle {
         }
         int deepest = depth;
         for (IngredientView input : recipe.inputs()) {
+            if (input.isEmpty()) {
+                continue; // blank grid slot: consumes nothing, no constraint
+            }
             if (input.candidates().isEmpty()) {
                 return new Result(Craftability.UNKNOWN, -1); // dead end: cannot verify
             }
