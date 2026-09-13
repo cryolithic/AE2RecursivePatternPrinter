@@ -19,7 +19,6 @@ public final class RecipeNode implements TreeNode {
     private Tier tier = Tier.PRIMARY;
     private Destination destination = Destination.assembler();
     private boolean collides;
-    private double score;
     private double roundTripEfficiency = Double.NaN;
     private boolean userOverridden;
     private boolean costlyCollision;
@@ -93,15 +92,6 @@ public final class RecipeNode implements TreeNode {
 
     public void setCollides(boolean collides) {
         this.collides = collides;
-    }
-
-    /** The ranking weight (DESIGN.md §8.4.4). */
-    public double score() {
-        return score;
-    }
-
-    public void setScore(double score) {
-        this.score = score;
     }
 
     /** Round-trip efficiency; NaN when the recipe is not a reversal (DESIGN.md §8.4.2). */

@@ -105,6 +105,21 @@ public final class TreeSelection {
         return List.copyOf(rows);
     }
 
+    /**
+     * The number of patterns the plan will print (raw-input rows excluded).
+     * O(tree) with allocation: call it at event time, not per frame — the
+     * GUI caches the result in a {@link PlanCountCache} (DESIGN.md §9, §11.1).
+     */
+    public static int patternCount(ItemNode root) {
+        int count = 0;
+        for (PlanRow row : planRows(root)) {
+            if (!row.rawInput()) {
+                count++;
+            }
+        }
+        return count;
+    }
+
     private static void walkItem(ItemNode node, Set<Object> seen, List<PlanRow> rows) {
         if (node.isLeaf() || node.state() == State.CYCLE || node.isRawInput()) {
             if (node.goal() instanceof AEItemKey goalKey) {
@@ -148,21 +163,70 @@ public final class TreeSelection {
     }
 
     private static void addRow(RecipeNode recipe, List<AEKey> candidates, List<PlanRow> rows) {
-        rows.add(new PlanRow(recipe.recipe().id(), recipe.recipe().outputs().get(0).what(),
-                List.copyOf(candidates), false, yieldOf(recipe)));
+        GenericStack output = goalOutput(recipe);
+        if (output == null) {
+            // No output matches the parent's goal (should not happen: the
+            // index buckets every recipe under each of its output items);
+            // fall back to the primary product.
+            output = recipe.recipe().outputs().get(0);
+        }
+        rows.add(new PlanRow(recipe.recipe().id(), output.what(),
+                List.copyOf(candidates), false, (int) output.amount()));
     }
 
-    /** The amount of the parent item node's goal in the recipe's outputs; 1 as a fallback. */
-    private static int yieldOf(RecipeNode recipe) {
+    /** The recipe output matching the parent item node's goal, or null. */
+    private static @Nullable GenericStack goalOutput(RecipeNode recipe) {
         if (recipe.parent() instanceof ItemNode item && item.goal() instanceof AEItemKey goalKey) {
             Item goalItem = goalKey.getItem();
             for (GenericStack output : recipe.recipe().outputs()) {
                 if (output.what() instanceof AEItemKey outKey && outKey.getItem() == goalItem) {
-                    return (int) output.amount();
+                    return output;
                 }
             }
         }
-        return recipe.recipe().outputs().isEmpty() ? 1 : (int) recipe.recipe().outputs().get(0).amount();
+        return null;
+    }
+
+    /**
+     * True when any row of the plan carries a pre-print review flag
+     * (DESIGN.md §11.2): an untrusted recipe, a reversal, a costly
+     * collision, or a force-selected rejected recipe — the same four
+     * flags the review screen counts. The print button uses this to open
+     * the review even when alwaysReviewBeforePrint is off.
+     */
+    public static boolean hasFlags(ItemNode root, List<PlanRow> plan, double minRoundTripEfficiency) {
+        Map<ResourceLocation, RecipeNode> recipeById = new HashMap<>();
+        for (ItemNode item : itemNodesUnder(root)) {
+            if (item.recipes() == null) {
+                continue;
+            }
+            for (RecipeNode recipe : item.recipes()) {
+                recipeById.putIfAbsent(recipe.recipe().id(), recipe);
+            }
+        }
+        for (PlanRow row : plan) {
+            if (row.recipeId() == null) {
+                continue; // raw input: supplied from storage, never printed
+            }
+            RecipeNode recipe = recipeById.get(row.recipeId());
+            if (recipe == null) {
+                continue;
+            }
+            if (!recipe.recipe().trusted()) {
+                return true;
+            }
+            double eff = recipe.roundTripEfficiency();
+            if (!Double.isNaN(eff) && eff >= minRoundTripEfficiency) {
+                return true;
+            }
+            if (recipe.isCostlyCollision()) {
+                return true;
+            }
+            if (recipe.tier() == REJECTED) {
+                return true;
+            }
+        }
+        return false;
     }
 
     // --- selection operations ---
@@ -255,39 +319,6 @@ public final class TreeSelection {
             recipe.setCollides(colliding.contains(recipe));
             recipe.setCostlyCollision(costly.getOrDefault(recipe, false));
         }
-    }
-
-    /**
-     * The plan-connectedness predicate (DESIGN.md §11.2): every row's
-     * output is either the root goal or an ingredient of another row. The
-     * print milestone verifies this server-side.
-     */
-    public static boolean isConnected(ItemNode root, List<PlanRow> plan) {
-        if (!(root.goal() instanceof AEItemKey rootKey)) {
-            return false;
-        }
-        Item rootItem = rootKey.getItem();
-        Set<Item> inputs = new HashSet<>();
-        for (PlanRow row : plan) {
-            for (AEKey candidate : row.selectedCandidates()) {
-                if (candidate instanceof AEItemKey candidateKey) {
-                    inputs.add(candidateKey.getItem());
-                }
-            }
-        }
-        for (PlanRow row : plan) {
-            if (!(row.output() instanceof AEItemKey outKey)) {
-                return false;
-            }
-            Item item = outKey.getItem();
-            if (item == rootItem) {
-                continue;
-            }
-            if (!inputs.contains(item)) {
-                return false;
-            }
-        }
-        return true;
     }
 
     /**
@@ -389,8 +420,10 @@ public final class TreeSelection {
                 if (!aNan && Math.abs(ea - eb) > 0.05) {
                     return true; // efficiencies differ
                 }
-                if (Math.abs(a.oracleDepth() - b.oracleDepth()) >= 1) {
-                    return true; // input depths differ
+                // A one-level depth delta is common (a recipe one step
+                // deeper) and not material; two or more levels is.
+                if (Math.abs(a.oracleDepth() - b.oracleDepth()) >= 2) {
+                    return true; // input depths differ materially
                 }
             }
         }

@@ -38,8 +38,8 @@ import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
 import org.jetbrains.annotations.Nullable;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.apache.logging.log4j.Logger;
+import org.apache.logging.log4j.LogManager;
 
 /**
  * One client-side recipe-tree session (DESIGN.md §8.1, §9, §11.1). Created
@@ -59,7 +59,7 @@ import org.slf4j.LoggerFactory;
  * from the built tree via {@link TreeSelection}.</p>
  */
 public final class ClientTreeSession {
-    private static final Logger LOGGER = LoggerFactory.getLogger(ClientTreeSession.class);
+    private static final Logger LOGGER = LogManager.getLogger(ClientTreeSession.class);
 
     /** The real tag-registry lookup for the reversal detector (DESIGN.md §8.4.2). */
     private static final ReversalDetector.TagLookup TAG_LOOKUP = item -> {
@@ -85,6 +85,8 @@ public final class ClientTreeSession {
     private volatile ItemNode root;
     /** The node currently being expanded on the background thread, for the spinner. */
     private volatile ItemNode expandingNode;
+    /** Item nodes whose background expansion is in flight; main thread only. */
+    private final Set<ItemNode> pendingExpansions = new HashSet<>();
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor(runnable -> {
         Thread thread = new Thread(runnable, "rpp-tree-build");
@@ -95,8 +97,14 @@ public final class ClientTreeSession {
     private volatile Future<?> pendingRoot;
     @Nullable
     private Consumer<ClientTreeSession> onUpdate;
+    /**
+     * The hop onto the client main thread for publishing results; volatile and
+     * package-private so tests can run the callback on the test thread.
+     */
+    volatile Consumer<Runnable> mainThread = runnable -> Minecraft.getInstance().execute(runnable);
 
-    private ClientTreeSession(AEKey rootGoal, RecipeIndex index, TreeLimits limits, SourceSelector selector,
+    /** Package-private for tests; production code goes through {@link #create}. */
+    ClientTreeSession(AEKey rootGoal, RecipeIndex index, TreeLimits limits, SourceSelector selector,
             RecipeTreeBuilder builder, StickyChoices sticky) {
         this.rootGoal = rootGoal;
         this.index = index;
@@ -206,30 +214,43 @@ public final class ClientTreeSession {
     // --- expansion ---
 
     /**
-     * Requests a background expansion of an UNEXPANDED item node. No-op when
-     * the node is already materialized. The build runs on the single-thread
-     * executor; the result is published to the main thread and the update
+     * Requests a background expansion of an UNEXPANDED item node. No-op
+     * when the node is already materialized or already has an expansion in
+     * flight. The build runs on the single-thread executor against a
+     * detached twin of the node, never touching the live graph; the result
+     * is attached to the live graph on the main thread and the update
      * listener is notified (or the tree rebuilds from the root if stale).
      */
     public void requestExpand(ItemNode node) {
-        if (node.state() != State.UNEXPANDED) {
+        if (node.state() != State.UNEXPANDED || !pendingExpansions.add(node)) {
             return;
         }
         expandingNode = node;
         RecipeIndex snapshot = this.index;
+        RecipeTreeBuilder builder = this.builder;
         executor.submit(() -> {
+            @Nullable
+            RecipeTreeBuilder.Expansion expansion = null;
             try {
-                builder.expand(node);
+                expansion = builder.expandDetached(node);
             } catch (Exception e) {
                 LOGGER.error("rpp tree expansion failed", e);
-                node.setState(State.ERROR);
             }
-            Minecraft.getInstance().execute(() -> {
+            // Final copy for the main-thread lambda: the outer task
+            // reassigns expansion, so the inner lambda cannot capture it
+            // directly. The value is settled before the lambda is created.
+            final RecipeTreeBuilder.Expansion result = expansion;
+            mainThread.accept(() -> {
+                pendingExpansions.remove(node);
                 expandingNode = null;
                 if (snapshot != this.index) {
                     // A reload swapped the index mid-build; discard and rebuild.
                     rebuildRoot();
+                } else if (result != null) {
+                    builder.publish(result);
+                    notifyUpdate();
                 } else {
+                    node.setState(State.ERROR);
                     notifyUpdate();
                 }
             });
@@ -508,7 +529,7 @@ public final class ClientTreeSession {
         RecipeIndex snapshot = this.index;
         pendingRoot = executor.submit(() -> {
             ItemNode newRoot = buildRootSafe();
-            Minecraft.getInstance().execute(() -> {
+            mainThread.accept(() -> {
                 pendingRoot = null;
                 if (snapshot != this.index) {
                     // A reload swapped the index mid-build; discard and rebuild.
@@ -530,7 +551,15 @@ public final class ClientTreeSession {
         }
     }
 
-    /** Rebuilds the whole tree from the root against the current index snapshot. */
+    /**
+     * Rebuilds the whole tree from the root against the current index
+     * snapshot. The snapshot fields are always refreshed so the in-flight
+     * build's publish can detect a later mismatch, but a new root build is
+     * submitted only when none is pending: a pending build already handles
+     * the reload (its publish re-checks the snapshot and resubmits if
+     * needed), and a second build on the same builder starts with inflated
+     * node counters and can publish a wrongly capped tree (DESIGN.md §9).
+     */
     private void rebuildRoot() {
         RecipeIndex newIndex = RecipeIndexHolder.current();
         if (newIndex.recipeCount() == 0) {
@@ -541,7 +570,9 @@ public final class ClientTreeSession {
         this.builder = new RecipeTreeBuilder(newIndex, limits, TAG_LOOKUP, this.selector);
         this.root = null;
         this.expandingNode = null;
-        submitRootBuild();
+        if (pendingRoot == null) {
+            submitRootBuild();
+        }
     }
 
     private void notifyUpdate() {

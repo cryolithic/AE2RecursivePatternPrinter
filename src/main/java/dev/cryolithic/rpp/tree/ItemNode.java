@@ -24,6 +24,12 @@ public final class ItemNode implements TreeNode {
     private boolean rawInput;
     @Nullable
     private Craftability craftability;
+    /**
+     * The number of recipes that survived cycle filtering for this node;
+     * the basis for the "+K more" marker (recipes cut by the per-item cap,
+     * not ones AE2 would refuse in this context).
+     */
+    private int filteredCount;
 
     ItemNode(AEKey goal, int id, @Nullable TreeNode parent) {
         this.goal = goal;
@@ -119,5 +125,14 @@ public final class ItemNode implements TreeNode {
 
     void setCraftability(Craftability craftability) {
         this.craftability = craftability;
+    }
+
+    /** The count of cycle-surviving recipes; see {@link #filteredCount}. */
+    public int filteredCount() {
+        return filteredCount;
+    }
+
+    void setFilteredCount(int filteredCount) {
+        this.filteredCount = filteredCount;
     }
 }

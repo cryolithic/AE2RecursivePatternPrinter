@@ -3,6 +3,7 @@ package dev.cryolithic.rpp.tree;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import net.minecraft.resources.ResourceLocation;
 import org.jetbrains.annotations.Nullable;
 
@@ -16,6 +17,10 @@ import org.jetbrains.annotations.Nullable;
  * build (ranked at weight 1), and can be forgotten per item or cleared in
  * full. A stale recipe id (absent from the current index) is dropped
  * silently at apply time, not here.</p>
+ *
+ * <p>The store is a {@link ConcurrentHashMap}: the background expansion
+ * thread reads it through {@code SourceSelector} while the client main
+ * thread mutates it on every selection change (DESIGN.md §9).</p>
  */
 public final class StickyChoices {
     /**
@@ -28,7 +33,7 @@ public final class StickyChoices {
         Map<ResourceLocation, SourceSet> load();
     }
 
-    private final Map<ResourceLocation, SourceSet> sets = new HashMap<>();
+    private final Map<ResourceLocation, SourceSet> sets = new ConcurrentHashMap<>();
     private final Persistence persistence;
 
     public StickyChoices() {

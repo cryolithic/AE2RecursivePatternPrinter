@@ -24,9 +24,12 @@ import net.minecraft.resources.ResourceLocation;
 import net.minecraft.client.player.LocalPlayer;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.fml.event.lifecycle.FMLClientSetupEvent;
+import net.neoforged.neoforge.client.event.ClientTickEvent;
+import net.neoforged.neoforge.client.event.ScreenEvent;
+import net.neoforged.neoforge.common.NeoForge;
 import org.jetbrains.annotations.Nullable;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.apache.logging.log4j.Logger;
+import org.apache.logging.log4j.LogManager;
 
 /**
  * Client-side persistence for the sticky source sets (DESIGN.md §8.7).
@@ -36,9 +39,11 @@ import org.slf4j.LoggerFactory;
  *
  * <p>Loaded on client start (mod-bus {@link FMLClientSetupEvent}) and again
  * lazily the first time a tree session opens, in case the client was not
- * ready at event time. Saved on every change, crash-safe: the new content is
- * written to a temp file and moved over the target, so a crash mid-write
- * never corrupts the previous file.</p>
+ * ready at event time. Saved with coalescing (issue #59): a selection
+ * change marks the file dirty, and at most one write lands per second; the
+ * pending write is flushed when a screen closes. The write itself is
+ * crash-safe: the new content is written to a temp file and moved over the
+ * target, so a crash mid-write never corrupts the previous file.</p>
  *
  * <p>The file stores item and recipe ids as plain strings and tolerates
  * stale ids: an id that no longer parses (or no longer exists) is dropped
@@ -51,7 +56,7 @@ import org.slf4j.LoggerFactory;
  * runtime so it is unit-testable in a bare JVM.</p>
  */
 public final class StickyPersistence implements StickyChoices.Persistence {
-    private static final Logger LOGGER = LoggerFactory.getLogger(StickyPersistence.class);
+    private static final Logger LOGGER = LogManager.getLogger(StickyPersistence.class);
     private static final String SUBDIR = "rpp";
     private static final String FILE_NAME = "sticky_choices.json";
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -59,6 +64,9 @@ public final class StickyPersistence implements StickyChoices.Persistence {
     /** The parsed file: player name → goal item id → recipe ids. */
     private static final Map<String, Map<String, List<String>>> CACHE = new LinkedHashMap<>();
     private static volatile boolean loaded;
+
+    /** Coalesces the file writes: at most one per second, flushed on screen close (issue #59). */
+    private static final WriteCoalescer COALESCER = new WriteCoalescer();
 
     /** The single client-side instance, wired into every {@link StickyChoices}. */
     public static final StickyPersistence INSTANCE = new StickyPersistence();
@@ -69,6 +77,10 @@ public final class StickyPersistence implements StickyChoices.Persistence {
     /** Registers the client-start load on the mod bus. */
     public static void init(IEventBus modBus) {
         modBus.addListener(StickyPersistence::onClientSetup);
+        // ClientTickEvent and ScreenEvent.Closing are posted on the game bus,
+        // not the mod bus (cf. RecipeIndexBootstrap).
+        NeoForge.EVENT_BUS.addListener(StickyPersistence::onClientTick);
+        NeoForge.EVENT_BUS.addListener(StickyPersistence::onScreenClosing);
     }
 
     private static void onClientSetup(FMLClientSetupEvent event) {
@@ -98,7 +110,34 @@ public final class StickyPersistence implements StickyChoices.Persistence {
         synchronized (CACHE) {
             CACHE.put(player, fromStore(sets));
         }
-        saveFile();
+        COALESCER.markDirty();
+        writeIfDue(false);
+    }
+
+    /**
+     * Writes the file when the coalescer says a write is due: forced (a
+     * screen closing), or the last write is at least one second old. The
+     * dirty flag is cleared only when the write actually lands, so a failed
+     * write retries on the next opportunity.
+     */
+    private static void writeIfDue(boolean force) {
+        long now = System.nanoTime();
+        if (!COALESCER.shouldWrite(force, now)) {
+            return;
+        }
+        if (saveFile()) {
+            COALESCER.recordWrite(now);
+        }
+    }
+
+    /** Per-tick write opportunity: one boolean plus one timestamp comparison. */
+    private static void onClientTick(ClientTickEvent.Pre event) {
+        writeIfDue(false);
+    }
+
+    /** A screen closed (session teardown): flush any pending selection. */
+    private static void onScreenClosing(ScreenEvent.Closing event) {
+        writeIfDue(true);
     }
 
     // --- file I/O ---
@@ -136,10 +175,10 @@ public final class StickyPersistence implements StickyChoices.Persistence {
         }
     }
 
-    private static synchronized void saveFile() {
+    private static synchronized boolean saveFile() {
         Path dir = configDir();
         if (dir == null) {
-            return;
+            return false; // not ready; the next call retries
         }
         Path subdir = dir.resolve(SUBDIR);
         Path target = subdir.resolve(FILE_NAME);
@@ -157,11 +196,13 @@ public final class StickyPersistence implements StickyChoices.Persistence {
                 } catch (AtomicMoveNotSupportedException e) {
                     Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING);
                 }
+                return true;
             } finally {
                 Files.deleteIfExists(tmp);
             }
         } catch (IOException e) {
             LOGGER.warn("rpp could not save sticky choices to {}", target, e);
+            return false;
         }
     }
 
@@ -173,6 +214,50 @@ public final class StickyPersistence implements StickyChoices.Persistence {
         }
         LocalPlayer player = mc.player;
         return player == null ? null : player.getName().getString();
+    }
+
+    // --- write coalescing (issue #59) ---
+
+    /**
+     * The write-coalescing state: a selection change marks the file dirty;
+     * the file is written at most once per second, and a forced flush (a
+     * screen closing) writes immediately. The clock is a parameter so the
+     * decision is unit-testable in a bare JVM. All access is on the client
+     * main thread (selection changes, the tick, and screen closes all run
+     * there), so the fields need no synchronization.
+     */
+    static final class WriteCoalescer {
+        private static final long WRITE_INTERVAL_NANOS = 1_000_000_000L;
+
+        private boolean dirty;
+        private boolean hasWritten;
+        private long lastWriteNanos;
+
+        /** A selection changed: the file needs a write. */
+        void markDirty() {
+            dirty = true;
+        }
+
+        /**
+         * True when a pending write should go out now: forced, or the last
+         * write is at least one second old. A first write never waits.
+         */
+        boolean shouldWrite(boolean force, long nowNanos) {
+            if (!dirty) {
+                return false;
+            }
+            if (force || !hasWritten) {
+                return true;
+            }
+            return nowNanos - lastWriteNanos >= WRITE_INTERVAL_NANOS;
+        }
+
+        /** A write landed: clear the dirty flag and stamp the time. */
+        void recordWrite(long nowNanos) {
+            dirty = false;
+            hasWritten = true;
+            lastWriteNanos = nowNanos;
+        }
     }
 
     // --- pure file logic (testable without a Minecraft runtime) ---
