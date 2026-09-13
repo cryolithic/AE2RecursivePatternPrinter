@@ -32,6 +32,10 @@ public class PatternPrinterMenu extends AbstractContainerMenu {
     public static final int SLOT_OUTPUT_START = 2;
     /** Total block entity slot count. */
     public static final int SLOT_COUNT = 29;
+    /** First player main inventory slot in this menu (player slot 9). */
+    public static final int PLAYER_MAIN_START = SLOT_COUNT;
+    /** First player hotbar slot in this menu (player slot 0); 27 main slots follow the printer slots. */
+    public static final int PLAYER_HOTBAR_START = SLOT_COUNT + 27;
 
     private static final int OUTPUT_ROWS = 3;
     private static final int SLOTS_PER_ROW = 9;
@@ -90,22 +94,26 @@ public class PatternPrinterMenu extends AbstractContainerMenu {
         ItemStack result = moving.copy();
 
         if (index < SLOT_COUNT) {
-            // Printer slot -> player inventory (hotbar + main).
-            if (!this.moveItemStackTo(moving, SLOT_COUNT, this.slots.size(), true)) {
-                return result;
+            // Printer slot -> player inventory: main (9-35), then hotbar (0-8).
+            if (!this.moveItemStackTo(moving, PLAYER_MAIN_START, PLAYER_HOTBAR_START, false)
+                    && !this.moveItemStackTo(moving, PLAYER_HOTBAR_START, this.slots.size(), false)) {
+                // Nothing moved: return EMPTY. doClick loops while the return
+                // is non-empty and still matches the slot's item, so a
+                // non-empty unchanged return spins the server thread.
+                return ItemStack.EMPTY;
             }
         } else if (index < SLOT_COUNT + SLOTS_PER_ROW) {
             // Hotbar -> printer: outputs, then blanks, then input.
             if (!this.moveItemStackTo(moving, SLOT_OUTPUT_START, SLOT_COUNT, false)
                     && !this.moveItemStackTo(moving, SLOT_BLANKS, SLOT_BLANKS + 1, false)
                     && !this.moveItemStackTo(moving, SLOT_INPUT, SLOT_INPUT + 1, false)) {
-                return result;
+                return ItemStack.EMPTY;
             }
         } else {
             // Main inventory -> printer: input + blanks, then outputs.
             if (!this.moveItemStackTo(moving, SLOT_INPUT, SLOT_OUTPUT_START, false)
                     && !this.moveItemStackTo(moving, SLOT_OUTPUT_START, SLOT_COUNT, false)) {
-                return result;
+                return ItemStack.EMPTY;
             }
         }
 

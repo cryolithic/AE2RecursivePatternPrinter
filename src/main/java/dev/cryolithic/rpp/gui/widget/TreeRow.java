@@ -1,9 +1,7 @@
 package dev.cryolithic.rpp.gui.widget;
 
-import appeng.api.stacks.AEItemKey;
 import dev.cryolithic.rpp.tree.ItemNode;
 import dev.cryolithic.rpp.tree.RecipeNode;
-import java.util.Locale;
 import net.minecraft.resources.ResourceLocation;
 import org.jetbrains.annotations.Nullable;
 
@@ -95,29 +93,6 @@ public final class TreeRow {
 
     public boolean isMore() {
         return kind == Kind.MORE;
-    }
-
-    /** The node this row represents, for hit-testing; null for a {@link Kind#MORE} marker. */
-    @Nullable
-    public Object node() {
-        return item != null ? item : recipe;
-    }
-
-    /**
-     * The display name, used for the search filter. Item rows use the item's
-     * in-game name; recipe rows use a pretty form of the recipe id.
-     */
-    public String name() {
-        if (item != null) {
-            if (item.goal() instanceof AEItemKey key) {
-                return key.toStack().getHoverName().getString().toLowerCase(Locale.ROOT);
-            }
-            return "";
-        }
-        if (recipe != null) {
-            return recipeName(recipe).toLowerCase(Locale.ROOT);
-        }
-        return "";
     }
 
     /** A pretty form of a recipe id: the path with underscores as spaces, namespaced unless vanilla. */

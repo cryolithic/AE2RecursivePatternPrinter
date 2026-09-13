@@ -331,7 +331,7 @@ public class PrintReviewScreen extends Screen {
 
         // Title: pattern count beside the blanks count, red when the plan exceeds the blanks.
         ClientTreeSession session = parent.session();
-        int patterns = session != null ? session.patternCount() : 0;
+        int patterns = parent.patternCount();
         int blanks = session != null ? session.blanksCount(parent.menu()) : 0;
         String title = I18n.get("rpp.gui.review.title", patterns, blanks);
         graphics.drawString(font, title, originX + PADDING + 2, originY + TITLE_Y + 3,

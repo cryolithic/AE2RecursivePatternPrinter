@@ -9,10 +9,13 @@ import dev.cryolithic.rpp.tree.ItemNode;
 import dev.cryolithic.rpp.tree.RecipeNode;
 import dev.cryolithic.rpp.tree.Tier;
 import dev.cryolithic.rpp.tree.TreeNode;
+import dev.cryolithic.rpp.tree.TreeSelection;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
@@ -45,6 +48,9 @@ public final class TreeWidget {
     private static final int SCROLLBAR_WIDTH = 6;
     private static final int MENU_WIDTH = 128;
     private static final int MENU_OPTION_HEIGHT = 14;
+    private static final int MIN_PANE_HEIGHT = 60;
+    private static final int MAX_PANE_HEIGHT = 240;
+    private static final int RESIZE_HANDLE_HEIGHT = 5;
 
     private static final int PANE_BG = 0xFF161616;
     private static final int PANE_BORDER = 0xFF3A3A3A;
@@ -74,11 +80,24 @@ public final class TreeWidget {
     private int hoverRow = -1;
     private String filter = "";
 
+    /** Cached collapse summaries, keyed by node identity; refreshed in {@link #rebuildRows}. */
+    private final Map<ItemNode, String> collapseSummaries = new IdentityHashMap<>();
+    /** Fired on the main thread at the end of every {@link #rebuildRows}. */
+    @Nullable
+    private Runnable onRebuild;
+    @Nullable
+    private java.util.function.IntConsumer onHeightChange;
+
     @Nullable
     private ItemNode menuNode;
     private int menuX;
     private int menuY;
     private int menuHover = -1;
+
+    /** True while the user is dragging the bottom resize handle. */
+    private boolean resizing;
+    private int resizeStartMouseY;
+    private int resizeStartHeight;
 
     public TreeWidget(@Nullable ClientTreeSession session, int x, int y, int width, int height) {
         this.session = session;
@@ -86,18 +105,32 @@ public final class TreeWidget {
         this.y = y;
         this.width = width;
         this.height = height;
-        this.scrollbar = new TreeScrollbar(x + width - SCROLLBAR_WIDTH, y + 1, height - 2);
+        this.scrollbar = new TreeScrollbar(x + width - SCROLLBAR_WIDTH, y + 1, height - RESIZE_HANDLE_HEIGHT - 2);
         rebuildRows();
+    }
+
+    /**
+     * Resizes the pane height (DESIGN.md §11.1), clamped to
+     * {@code [MIN_PANE_HEIGHT, MAX_PANE_HEIGHT]}. Updates the scrollbar
+     * viewport and re-clamps the scroll offset.
+     */
+    public void setHeight(int height) {
+        int clamped = Math.max(MIN_PANE_HEIGHT, Math.min(MAX_PANE_HEIGHT, height));
+        if (clamped == this.height) {
+            return;
+        }
+        this.height = clamped;
+        scrollbar.setViewport(y + 1, height - RESIZE_HANDLE_HEIGHT - 2);
+        clampScroll();
+        if (onHeightChange != null) {
+            onHeightChange.accept(clamped);
+        }
     }
 
     /** Updates the session (e.g. when one becomes available after the input slot is filled). */
     public void setSession(@Nullable ClientTreeSession session) {
         this.session = session;
         rebuildRows();
-    }
-
-    public int getHeight() {
-        return height;
     }
 
     public void setFilter(String filter) {
@@ -109,9 +142,20 @@ public final class TreeWidget {
         return filter;
     }
 
+    /** Sets the callback fired at the end of every {@link #rebuildRows} (main thread). */
+    public void setOnRebuild(@Nullable Runnable onRebuild) {
+        this.onRebuild = onRebuild;
+    }
+
+    /** Sets the callback fired when the pane height changes via the resize handle (main thread). */
+    public void setOnHeightChange(@Nullable java.util.function.IntConsumer onHeightChange) {
+        this.onHeightChange = onHeightChange;
+    }
+
     /** Recomputes the flattened visible-row list from the current tree and filter. */
     public void rebuildRows() {
         rows.clear();
+        collapseSummaries.clear();
         ClientTreeSession session = this.session;
         ItemNode root = session != null ? session.root() : null;
         if (root != null) {
@@ -122,6 +166,10 @@ public final class TreeWidget {
             }
         }
         clampScroll();
+        Runnable hook = this.onRebuild;
+        if (hook != null) {
+            hook.run();
+        }
     }
 
     public int rowCount() {
@@ -137,6 +185,13 @@ public final class TreeWidget {
         graphics.fill(x, y, x + 1, y + height, PANE_BORDER);
         graphics.fill(x + width - 1, y, x + width, y + height, PANE_BORDER);
 
+        // Bottom resize handle (DESIGN.md §11.1): a grip bar the user drags
+        // to resize the pane height. Highlighted while hovered or dragging.
+        int handleY = y + height - RESIZE_HANDLE_HEIGHT - 1;
+        int handleColor = (resizing || isMouseOverHandle(mouseX, mouseY)) ? ACCENT_COLOR : PANE_BORDER;
+        graphics.fill(x + 1, handleY, x + width - 1, handleY + RESIZE_HANDLE_HEIGHT, handleColor);
+        graphics.fill(x + width / 2 - 6, handleY + 2, x + width / 2 + 6, handleY + 3, 0xFF101010);
+
         int contentWidth = width - SCROLLBAR_WIDTH;
         int firstRowY = y + 1;
         if (session != null && session.builder().atTotalNodeCap()) {
@@ -144,7 +199,7 @@ public final class TreeWidget {
             graphics.drawCenteredString(font, I18n.get("rpp.gui.banner.capped"), x + contentWidth / 2, firstRowY + 3, BANNER_TEXT);
             firstRowY += ROW_HEIGHT;
         }
-        int visibleRows = Math.max(1, (y + height - 1 - firstRowY) / ROW_HEIGHT);
+        int visibleRows = Math.max(1, (y + height - RESIZE_HANDLE_HEIGHT - 1 - firstRowY) / ROW_HEIGHT);
         int first = scrollOffset;
         int last = Math.min(rows.size(), scrollOffset + visibleRows);
         for (int i = first; i < last; i++) {
@@ -216,7 +271,10 @@ public final class TreeWidget {
             drawMenuArrow(graphics, arrowX, rowY + 3);
             graphics.drawString(font, count, rightX, rowY + 3, ACCENT_COLOR);
         } else if (item.state() == State.COLLAPSED && item.recipes() != null) {
-            String summary = collapseSummary(item);
+            String summary = collapseSummaries.get(item);
+            if (summary == null) {
+                summary = collapseSummary(item);
+            }
             int summaryWidth = font.width(summary);
             int arrowX = rightX;
             rightX -= summaryWidth + 10;
@@ -332,7 +390,9 @@ public final class TreeWidget {
                 for (int i = 0; i < menuOptions().length; i++) {
                     int optY = menuY + 1 + i * MENU_OPTION_HEIGHT;
                     if (mouseY >= optY && mouseY < optY + MENU_OPTION_HEIGHT) {
-                        performMenuAction(menuNode, i);
+                        if (!expansionInFlight()) {
+                            performMenuAction(menuNode, i);
+                        }
                         menuNode = null;
                         return true;
                     }
@@ -342,6 +402,12 @@ public final class TreeWidget {
             return true;
         }
         if (scrollbar.mouseClicked(mouseX, mouseY, button)) {
+            return true;
+        }
+        if (isMouseOverHandle(mouseX, mouseY)) {
+            resizing = true;
+            resizeStartMouseY = (int) mouseY;
+            resizeStartHeight = height;
             return true;
         }
         int row = rowAt(mouseX, mouseY);
@@ -365,8 +431,10 @@ public final class TreeWidget {
                 return true;
             }
             if (isShiftDown() && item.recipes() != null) {
-                session.markRawInput(item);
-                rebuildRows();
+                if (!expansionInFlight()) {
+                    session.markRawInput(item);
+                    rebuildRows();
+                }
                 return true;
             }
             return false;
@@ -375,8 +443,10 @@ public final class TreeWidget {
             ItemNode parent = treeRow.recipe().parent() instanceof ItemNode item ? item : null;
             int cbX = x + indent + 2;
             if (parent != null && mouseX >= cbX && mouseX < cbX + CHECKBOX_SIZE && mouseY >= rowY && mouseY < rowY + ROW_HEIGHT) {
-                session.toggleRecipe(parent, treeRow.recipeIndex());
-                rebuildRows();
+                if (!expansionInFlight()) {
+                    session.toggleRecipe(parent, treeRow.recipeIndex());
+                    rebuildRows();
+                }
                 return true;
             }
             return false;
@@ -385,10 +455,18 @@ public final class TreeWidget {
     }
 
     public boolean mouseReleased(double mouseX, double mouseY, int button) {
+        if (resizing) {
+            resizing = false;
+            return true;
+        }
         return scrollbar.mouseReleased(mouseX, mouseY, button);
     }
 
     public boolean mouseDragged(double mouseX, double mouseY, int button, double changeX, double changeY) {
+        if (resizing) {
+            setHeight(resizeStartHeight + ((int) mouseY - resizeStartMouseY));
+            return true;
+        }
         return scrollbar.mouseDragged(mouseX, mouseY, button, changeX, changeY);
     }
 
@@ -401,6 +479,12 @@ public final class TreeWidget {
         return true;
     }
 
+    /** True when the mouse is over the bottom resize handle. */
+    private boolean isMouseOverHandle(double mouseX, double mouseY) {
+        return mouseX >= x && mouseX < x + width
+                && mouseY >= y + height - RESIZE_HANDLE_HEIGHT - 2 && mouseY < y + height;
+    }
+
     public void mouseMoved(double mouseX, double mouseY) {
         hoverRow = rowAt(mouseX, mouseY);
     }
@@ -410,7 +494,7 @@ public final class TreeWidget {
     }
 
     private int rowAt(double mouseX, double mouseY) {
-        if (mouseX < x || mouseX >= x + width - SCROLLBAR_WIDTH || mouseY < y + 1 || mouseY >= y + height - 1) {
+        if (mouseX < x || mouseX >= x + width - SCROLLBAR_WIDTH || mouseY < y + 1 || mouseY >= y + height - RESIZE_HANDLE_HEIGHT) {
             return -1;
         }
         int firstRowY = bannerTop();
@@ -471,6 +555,15 @@ public final class TreeWidget {
                 || InputConstants.isKeyDown(window, InputConstants.KEY_RSHIFT);
     }
 
+    /**
+     * True while a background expansion is running. Selection mutations are
+     * ignored then, because the background thread is still walking and
+     * growing the tree; expand/collapse clicks are unaffected (DESIGN.md §9).
+     */
+    private boolean expansionInFlight() {
+        return session != null && session.expandingNode() != null;
+    }
+
     // --- helpers ---
 
     private int bannerHeight() {
@@ -482,7 +575,7 @@ public final class TreeWidget {
     }
 
     private void clampScroll() {
-        int visibleRows = Math.max(1, (height - 2 - bannerHeight()) / ROW_HEIGHT);
+        int visibleRows = Math.max(1, (height - RESIZE_HANDLE_HEIGHT - 2 - bannerHeight()) / ROW_HEIGHT);
         int maxOffset = Math.max(0, rows.size() - visibleRows);
         scrollOffset = Math.max(0, Math.min(scrollOffset, maxOffset));
     }
@@ -507,7 +600,7 @@ public final class TreeWidget {
             }
         }
         if (target >= 0) {
-            int visibleRows = Math.max(1, (height - 2 - bannerHeight()) / ROW_HEIGHT);
+            int visibleRows = Math.max(1, (height - RESIZE_HANDLE_HEIGHT - 2 - bannerHeight()) / ROW_HEIGHT);
             scrollOffset = Math.max(0, target - visibleRows / 2);
         }
         clampScroll();
@@ -629,6 +722,9 @@ public final class TreeWidget {
             return;
         }
         rows.add(TreeRow.item(item, depth));
+        if (item.state() == State.COLLAPSED && item.recipes() != null) {
+            collapseSummaries.put(item, collapseSummary(item));
+        }
         boolean hasRecipes = item.recipes() != null;
         boolean showChildren = keep == null ? item.state() == State.EXPANDED : hasRecipes;
         if (hasRecipes && showChildren) {
@@ -719,6 +815,9 @@ public final class TreeWidget {
             if (item.craftability() != null) {
                 lines.add(colored(I18n.get("rpp.gui.tip.craftability", item.craftability().name()), DIM_COLOR));
             }
+            if (item.recipes() != null && TreeSelection.isOverCap(item, RppConfig.maxSourcesPerItem())) {
+                lines.add(colored(I18n.get("rpp.gui.tip.over_cap", item.selected().cardinality(), RppConfig.maxSourcesPerItem()), WARN_COLOR));
+            }
             return lines;
         }
         if (row.isRecipe() && row.recipe() != null) {
@@ -733,8 +832,15 @@ public final class TreeWidget {
             }
             if (view.inputs() != null) {
                 for (var input : view.inputs()) {
-                    String inputName = input.candidates().isEmpty() ? "?" : I18n.get(input.candidates().get(0).getDescriptionId());
-                    lines.add(colored("  " + inputName, TEXT_COLOR));
+                    if (input.candidates().isEmpty()) {
+                        lines.add(colored("  ?", TEXT_COLOR));
+                        continue;
+                    }
+                    List<String> names = new ArrayList<>();
+                    for (var candidate : input.candidates()) {
+                        names.add(I18n.get(candidate.getDescriptionId()));
+                    }
+                    lines.add(colored("  " + String.join(", ", names), TEXT_COLOR));
                 }
             }
             return lines;

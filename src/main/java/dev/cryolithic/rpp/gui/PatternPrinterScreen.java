@@ -7,6 +7,8 @@ import dev.cryolithic.rpp.net.PrintRequestPayload;
 import dev.cryolithic.rpp.net.PrintResultPayload;
 import dev.cryolithic.rpp.print.PlanEntry;
 import dev.cryolithic.rpp.tree.ItemNode;
+import dev.cryolithic.rpp.tree.PlanCountCache;
+import dev.cryolithic.rpp.tree.TreeSelection;
 import java.util.List;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphics;
@@ -26,8 +28,8 @@ import org.jetbrains.annotations.Nullable;
  * triangles, badges, search, per-node menu, live pattern counter) and the
  * container slots (input pattern, blanks, 27 outputs, player inventory) on the
  * right. The print button opens the pre-print review (DESIGN.md §11.2) when
- * {@code alwaysReviewBeforePrint} is set, or sends the
- * {@link PrintRequestPayload} directly; the {@link PrintResultPayload}
+ * {@code alwaysReviewBeforePrint} is set or the plan carries a flag, or
+ * sends the {@link PrintRequestPayload} directly; the {@link PrintResultPayload}
  * response is rendered on this screen via {@link PrintResultSink}.
  *
  * <p>The tree is a client-side, never-persisted derived state: a
@@ -57,6 +59,8 @@ public class PatternPrinterScreen extends AbstractContainerScreen<PatternPrinter
 
     @Nullable
     private ClientTreeSession session;
+    /** O(1) pattern-count cache for the render path (DESIGN.md §9, §11.1). */
+    private final PlanCountCache planCountCache = new PlanCountCache(TreeSelection::patternCount);
     @Nullable
     private TreeWidget treeWidget;
     @Nullable
@@ -78,6 +82,8 @@ public class PatternPrinterScreen extends AbstractContainerScreen<PatternPrinter
     /** The tree node to scroll to once the tree pane re-initializes after a review round trip. */
     @Nullable
     private ItemNode focusTarget;
+    /** The user-resized tree pane height (DESIGN.md §11.1); restored on re-init. */
+    private int treeHeight = TREE_HEIGHT;
 
     public PatternPrinterScreen(PatternPrinterMenu menu, Inventory playerInventory, Component title) {
         super(menu, playerInventory, title);
@@ -106,7 +112,9 @@ public class PatternPrinterScreen extends AbstractContainerScreen<PatternPrinter
 
         int treeX = originX + 8;
         int treeY = originY + TREE_Y;
-        treeWidget = new TreeWidget(session, treeX, treeY, TREE_WIDTH, TREE_HEIGHT);
+        treeWidget = new TreeWidget(session, treeX, treeY, TREE_WIDTH, treeHeight);
+        treeWidget.setOnRebuild(this::refreshPatternCount);
+        treeWidget.setOnHeightChange(h -> treeHeight = h);
 
         searchBox = new EditBox(this.font, treeX, originY + SEARCH_Y, TREE_WIDTH, 16, Component.translatable("rpp.gui.search"));
         searchBox.setMaxLength(64);
@@ -147,6 +155,22 @@ public class PatternPrinterScreen extends AbstractContainerScreen<PatternPrinter
         }
     }
 
+    /**
+     * Recomputes the cached pattern count on the main thread, after every
+     * event that can change it — selection, expand/collapse, rebuild and
+     * filter changes all rebuild the widget's rows, which fires this. The
+     * render path then reads the cache in O(1) (DESIGN.md §9, §11.1).
+     */
+    private void refreshPatternCount() {
+        planCountCache.invalidate();
+        planCountCache.count(session != null ? session.root() : null);
+    }
+
+    /** The cached pattern count; O(1) on the render path. */
+    public int patternCount() {
+        return planCountCache.count(session != null ? session.root() : null);
+    }
+
     private void onSelectAll() {
         if (session != null) {
             session.selectAll();
@@ -178,13 +202,24 @@ public class PatternPrinterScreen extends AbstractContainerScreen<PatternPrinter
         if (session == null || !session.isRootReady()) {
             return;
         }
-        if (RppConfig.alwaysReviewBeforePrint()) {
+        List<PlanEntry> entries = session.planEntries();
+        int batchCap = RppConfig.maxPrintBatch();
+        if (entries.size() > batchCap) {
+            // The server would reject the whole job; say so locally instead of
+            // round-tripping a request we already know fails (DESIGN.md §10.2 step 2).
+            this.lastResult = new PrintResultPayload(0, entries.size(),
+                    I18n.get("rpp.gui.result.batch_cap", batchCap));
+            return;
+        }
+        // A flagged plan is always reviewed (DESIGN.md §11.2, §12): the
+        // toggle only decides whether an unflagged plan is reviewed.
+        if (RppConfig.alwaysReviewBeforePrint()
+                || TreeSelection.hasFlags(session.root(), session.plan(), RppConfig.minRoundTripEfficiency())) {
             PrintReviewScreen review = new PrintReviewScreen(this);
             this.reviewScreen = review;
             this.minecraft.setScreen(review);
             return;
         }
-        List<PlanEntry> entries = session.planEntries();
         ItemStack input = this.menu.getSlot(PatternPrinterMenu.SLOT_INPUT).getItem();
         PrintRequestPayload payload = new PrintRequestPayload(input, entries);
         if (this.minecraft.getConnection() != null) {
@@ -270,16 +305,19 @@ public class PatternPrinterScreen extends AbstractContainerScreen<PatternPrinter
 
         if (session == null) {
             // No valid pattern or index not ready: show a message in the tree area.
+            // Distinguish the two: an empty input slot asks for a pattern; a
+            // pattern that is present but the index is still building says so.
             int treeX = originX + 8;
             int treeY = originY + TREE_Y;
             graphics.fill(treeX, treeY, treeX + TREE_WIDTH, treeY + TREE_HEIGHT, 0xFF161616);
-            String message = I18n.get("rpp.gui.no_pattern");
+            boolean hasPattern = !this.menu.getSlot(PatternPrinterMenu.SLOT_INPUT).getItem().isEmpty();
+            String message = hasPattern ? I18n.get("rpp.gui.index_building") : I18n.get("rpp.gui.no_pattern");
             graphics.drawCenteredString(this.font, message, treeX + TREE_WIDTH / 2, treeY + TREE_HEIGHT / 2, DIM_COLOR);
             return;
         }
 
         // Status line: live pattern counter beside the blanks count, red when it exceeds blanks.
-        int patterns = session.patternCount();
+        int patterns = patternCount();
         int blanks = session.blanksCount(this.menu);
         int statusX = originX + 8;
         int statusY = originY + STATUS_Y + 3;
