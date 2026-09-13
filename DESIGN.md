@@ -366,12 +366,15 @@ record RecipeView(
 
 Default extraction, in order of preference:
 
-1. **`CraftingRecipe`** — `getIngredients()` for inputs, with width and height
+1. **Registered `RecipeAdapter`** (§6.4) — tried first so a mod can describe
+   its recipe type properly; a throwing adapter is counted as a failure and
+   disabled for the build after `MAX_ADAPTER_THROWS`, falling through to the
+   vanilla paths below.
+2. **`CraftingRecipe`** — `getIngredients()` for inputs, with width and height
    from `ShapedRecipe`; shapeless recipes get width 0. Skip
    `CustomRecipe`/special recipes entirely; they have no static result.
-2. **`Recipe<?>` generic** — `getResultItem(registries)` for the output,
+3. **`Recipe<?>` generic** — `getResultItem(registries)` for the output,
    `getIngredients()` for inputs, `trusted = false`.
-3. **Registered `RecipeAdapter`** — §6.4.
 
 `getResultItem` throws or returns empty for a meaningful minority of modded
 recipes. Wrap each recipe's extraction in try/catch, count failures, log a
@@ -528,8 +531,11 @@ All in `TreeLimits`, all config-backed, all enforced during expansion.
 | `maxNodesPerExpansion` | 4000 | Abort that one expansion, mark `CAPPED`, leave rest of tree intact |
 | `maxTotalNodes` | 100000 | Refuse further expansion, GUI shows a banner |
 
-`maxNodesPerExpansion` is per-click, not per-session. One bad click degrades one
-branch rather than the whole GUI.
+`maxNodesPerExpansion` is per expansion (each item-node expansion), not
+per-session. An expansion that would exceed the cap is marked `CAPPED`,
+leaving the rest of the tree intact. Auto-collapse cascades expansions, so a
+single click can exceed the cap in aggregate — the session cap
+(`maxTotalNodes`) is the real total limit (see #73).
 
 ### 8.4 Source selection
 
@@ -634,10 +640,11 @@ Ordering decides which candidate is `PRIMARY` and the display order. Descending
 weight:
 
 1. **Sticky choice** (§8.7). The player already answered this.
-2. **Namespace match** — recipe namespace equals the goal item's namespace.
-3. **Configured `preferredMods` order** (§12). The knob that encodes "I am a
-   Mekanism player". The single most effective lever a pack player has.
-4. **Vanilla crafting or smelting** — no machine required.
+2. **Configured `preferredMods` order** (§12). The knob that encodes "I am a
+   Mekanism player". The single most effective lever a pack player has. It
+   overrides a namespace match when configured.
+3. **Namespace match** — recipe namespace equals the goal item's namespace.
+4. **Vanilla (minecraft-namespaced) recipe type** — no modded machine required.
 5. **Shallower oracle depth.**
 6. **Fewer distinct input items.**
 7. **Recipe id, lexicographic** — determinism only. A tree that reshuffles
@@ -703,7 +710,7 @@ record SourceSet(ResourceLocation goalItem, Set<ResourceLocation> recipeIds) {}
 - **Across trees**: persisted per player client-side, keyed by goal item,
   reapplied on the next build and ranked at weight 1 in §8.4.4.
 - **Visible and reversible**: rows restored from a sticky set are marked as
-  such, with "forget this choice" on the row and a clear-all in config. A
+  such, with "forget this choice" on the row and a clear-all in the GUI. A
   remembered wrong choice that cannot be seen or undone is worse than no memory.
 - **Invalidated** when a remembered recipe id is absent after a reload, falling
   back to tiering silently.
@@ -750,9 +757,12 @@ Get the blank pattern item through `appeng.api.ids.AEItemIds.BLANK_PATTERN`
 
 Backed by one `ItemStackHandler`, exposed as `Capabilities.ItemHandler.BLOCK`
 with a side-aware wrapper: insert routes to blanks, extract pulls from outputs
-only. Persisted in `saveAdditional` / `loadAdditional`, synced by
-`getUpdateTag` / `getUpdatePacket`. The tree is never persisted — it is derived
-state, rebuilt from the input slot on open.
+only. Persisted in `saveAdditional` / `loadAdditional`. Sync is menu-only: the
+GUI reads its slots from the server-synced menu, and the tree is rebuilt from
+the server's input slot on open, so no client code reads the block entity's
+inventory directly — `getUpdateTag` / `getUpdatePacket` cover only the initial
+client-side copy on chunk load / block placement. The tree is never persisted —
+it is derived state, rebuilt from the input slot on open.
 
 ### 10.2 Print flow
 
@@ -980,7 +990,7 @@ Then:
   and flags them when their costs differ; two lossless unpack recipes collide
   silently.
 - **Destination classification**: a 3×3 recipe maps to `ASSEMBLER`, a furnace
-  recipe to `MACHINE:minecraft:smelting`, a stonecutter recipe to `STONECUTTER`,
+  recipe to `MACHINE:smelting`, a stonecutter recipe to `STONECUTTER`,
   matching the encoder chosen in §10.3.
 - **The iron fixture resolves to three distinct destinations** and therefore
   auto-checks all three sources.
