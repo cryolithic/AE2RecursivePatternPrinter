@@ -3,6 +3,7 @@ package dev.cryolithic.rpp.net;
 import net.minecraft.network.RegistryFriendlyByteBuf;
 import net.minecraft.network.codec.StreamCodec;
 import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
+import net.minecraft.resources.ResourceLocation;
 import org.jetbrains.annotations.Nullable;
 
 /**
@@ -17,7 +18,8 @@ import org.jetbrains.annotations.Nullable;
  */
 public record PrintResultPayload(int printed, int skipped, @Nullable String reason)
         implements CustomPacketPayload {
-    public static final Type<PrintResultPayload> TYPE = CustomPacketPayload.createType("rpp:print_result");
+    // createType(String) would mangle the namespace; parse the namespaced id directly.
+    public static final Type<PrintResultPayload> TYPE = new CustomPacketPayload.Type<>(ResourceLocation.parse("rpp:print_result"));
 
     public static final StreamCodec<RegistryFriendlyByteBuf, PrintResultPayload> STREAM_CODEC = StreamCodec.of(
             (buf, value) -> {

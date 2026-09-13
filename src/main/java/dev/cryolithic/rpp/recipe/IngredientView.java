@@ -23,4 +23,14 @@ public record IngredientView(
     public IngredientView(Ingredient ingredient, List<Item> candidates) {
         this(ingredient, candidates, null);
     }
+
+    /**
+     * True for a blank grid slot ({@code Ingredient.EMPTY}): a shaped
+     * recipe pads its grid with empty slots, and such a slot imposes no
+     * constraint — it consumes nothing, so no consumer may read its zero
+     * candidates as "an input with no source".
+     */
+    public boolean isEmpty() {
+        return ingredient().isEmpty();
+    }
 }

@@ -21,10 +21,13 @@ public record PlanEntry(
         AEKey output,
         List<AEKey> selectedCandidates) {
 
-    /** Wire codec for {@link PrintRequestPayload}; the list is varint-prefixed. */
+    /** Hard decode cap on the per-entry candidate list; a recipe with more input slots than this is pathological. */
+    public static final int MAX_CANDIDATES = 128;
+
+    /** Wire codec for {@link PrintRequestPayload}; the list is varint-prefixed and capped. */
     public static final StreamCodec<RegistryFriendlyByteBuf, PlanEntry> STREAM_CODEC = StreamCodec.composite(
             ResourceLocation.STREAM_CODEC, PlanEntry::recipeId,
             AEKey.STREAM_CODEC, PlanEntry::output,
-            ByteBufCodecs.<RegistryFriendlyByteBuf, AEKey>list().apply(AEKey.STREAM_CODEC), PlanEntry::selectedCandidates,
+            ByteBufCodecs.<RegistryFriendlyByteBuf, AEKey>list(MAX_CANDIDATES).apply(AEKey.STREAM_CODEC), PlanEntry::selectedCandidates,
             PlanEntry::new);
 }

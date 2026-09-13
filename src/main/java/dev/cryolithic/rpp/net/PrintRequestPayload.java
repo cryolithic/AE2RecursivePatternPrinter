@@ -6,6 +6,7 @@ import net.minecraft.network.RegistryFriendlyByteBuf;
 import net.minecraft.network.codec.ByteBufCodecs;
 import net.minecraft.network.codec.StreamCodec;
 import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.item.ItemStack;
 
 /**
@@ -15,16 +16,25 @@ import net.minecraft.world.item.ItemStack;
  * server revalidates everything against its own recipe manager before
  * encoding anything.
  *
- * @param inputPattern the echoed input pattern, for the staleness check
+ * @param inputPattern the encoded pattern currently in the input slot
  * @param entries      the selected plan entries, in client order
  */
 public record PrintRequestPayload(ItemStack inputPattern, List<PlanEntry> entries)
         implements CustomPacketPayload {
-    public static final Type<PrintRequestPayload> TYPE = CustomPacketPayload.createType("rpp:print_request");
+    // createType(String) would mangle the namespace (withDefaultNamespace rejects the
+    // colon); parse the namespaced id directly for a valid payload type.
+    public static final Type<PrintRequestPayload> TYPE = new CustomPacketPayload.Type<>(ResourceLocation.parse("rpp:print_request"));
+
+    /**
+     * Hard decode cap on the entry list (DESIGN.md §10.2 step 2). The
+     * configurable maxPrintBatch is enforced later in PrintPlan; this cap
+     * rejects hostile payloads at decode time, before they are materialized.
+     */
+    public static final int MAX_ENTRIES = 2048;
 
     public static final StreamCodec<RegistryFriendlyByteBuf, PrintRequestPayload> STREAM_CODEC = StreamCodec.composite(
             ItemStack.STREAM_CODEC, PrintRequestPayload::inputPattern,
-            ByteBufCodecs.<RegistryFriendlyByteBuf, PlanEntry>list().apply(PlanEntry.STREAM_CODEC),
+            ByteBufCodecs.<RegistryFriendlyByteBuf, PlanEntry>list(MAX_ENTRIES).apply(PlanEntry.STREAM_CODEC),
             PrintRequestPayload::entries,
             PrintRequestPayload::new);
 

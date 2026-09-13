@@ -60,7 +60,9 @@ public final class PatternPrinterInventory implements IItemHandler {
 
     @Override
     public int getSlotLimit(int slot) {
-        return slot == SLOT_BLANKS ? Item.ABSOLUTE_MAX_STACK_SIZE : 1;
+        // Report the delegate's actual cap so capacity simulation matches what
+        // insertItem will accept (the handler uses the default 64).
+        return slot == SLOT_BLANKS ? delegate.getSlotLimit(PatternPrinterBlockEntity.SLOT_BLANKS) : 1;
     }
 
     @Override

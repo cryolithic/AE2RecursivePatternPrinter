@@ -26,8 +26,8 @@ import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.neoforged.neoforge.items.ItemStackHandler;
 import org.jetbrains.annotations.Nullable;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.apache.logging.log4j.Logger;
+import org.apache.logging.log4j.LogManager;
 
 /**
  * Block entity of the Recursive Pattern Printer (DESIGN.md §10.1).
@@ -56,11 +56,17 @@ public class PatternPrinterBlockEntity extends BlockEntity implements MenuProvid
 
     private static final String INVENTORY_TAG = "inventory";
 
-    private static final Logger LOGGER = LoggerFactory.getLogger(PatternPrinterBlockEntity.class);
+    private static final Logger LOGGER = LogManager.getLogger(PatternPrinterBlockEntity.class);
 
     private final ItemStackHandler inventory = new ItemStackHandler(SLOT_COUNT) {
         @Override
         protected void onContentsChanged(int slot) {
+            // Sync is menu-only: no client code reads this block entity's
+            // inventory (the GUI gets its slots from the server-synced
+            // menu, and the tree is rebuilt from the server's input slot on
+            // open), so a stale client-side copy is never observable.
+            // setChanged() covers persistence; getUpdatePacket covers the
+            // initial client-side copy on chunk load / block placement.
             setChanged();
         }
     };
@@ -131,7 +137,13 @@ public class PatternPrinterBlockEntity extends BlockEntity implements MenuProvid
      */
     public PrintResultPayload runPrint(PrintRequestPayload request) {
         try {
-            if (!inventory.getStackInSlot(SLOT_INPUT).equals(request.inputPattern())) {
+            // ItemStack declares no equals override (components replaced NBT
+            // in 1.20.5), so .equals is identity and would reject every print:
+            // the slot's stack and the packet-decoded echo are distinct
+            // instances. matches() compares item + components + count; the
+            // input slot is size 1, so both stacks carry exactly one pattern
+            // and the count comparison is a no-op in practice.
+            if (!ItemStack.matches(inventory.getStackInSlot(SLOT_INPUT), request.inputPattern())) {
                 return new PrintResultPayload(0, request.entries().size(), "input pattern changed");
             }
 
@@ -141,7 +153,8 @@ public class PatternPrinterBlockEntity extends BlockEntity implements MenuProvid
                     request.inputPattern(),
                     request.entries(),
                     RppConfig.maxPrintBatch(),
-                    RppConfig.groupPrintByDestination());
+                    RppConfig.groupPrintByDestination(),
+                    getLevel());
             if (!plan.accepted()) {
                 return new PrintResultPayload(0, request.entries().size(), plan.rejectionReason());
             }
@@ -157,7 +170,8 @@ public class PatternPrinterBlockEntity extends BlockEntity implements MenuProvid
                         entry.selectedCandidates(),
                         getLevel().getRecipeManager(),
                         getLevel().registryAccess(),
-                        RppConfig.allowSubstitutions());
+                        RppConfig.allowSubstitutions(),
+                        RppConfig.allowFluidSubstitutions());
                 if (pattern.isEmpty()) {
                     reason = "encoding failed for " + entry.recipeId();
                     break;

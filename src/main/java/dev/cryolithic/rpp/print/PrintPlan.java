@@ -1,14 +1,11 @@
 package dev.cryolithic.rpp.print;
 
+import appeng.api.crafting.IPatternDetails;
 import appeng.api.crafting.PatternDetailsHelper;
 import appeng.api.ids.AEComponents;
 import appeng.api.stacks.AEItemKey;
 import appeng.api.stacks.AEKey;
 import appeng.api.stacks.GenericStack;
-import appeng.crafting.pattern.EncodedCraftingPattern;
-import appeng.crafting.pattern.EncodedProcessingPattern;
-import appeng.crafting.pattern.EncodedSmithingTablePattern;
-import appeng.crafting.pattern.EncodedStonecuttingPattern;
 import dev.cryolithic.rpp.recipe.IngredientView;
 import dev.cryolithic.rpp.recipe.RecipeAdapter;
 import dev.cryolithic.rpp.recipe.RecipeAdapters;
@@ -37,9 +34,10 @@ import net.minecraft.world.item.crafting.ShapedRecipe;
 import net.minecraft.world.item.crafting.SmithingRecipe;
 import net.minecraft.world.item.crafting.SmithingTransformRecipe;
 import net.minecraft.world.item.crafting.StonecutterRecipe;
+import net.minecraft.world.level.Level;
 import org.jetbrains.annotations.Nullable;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.apache.logging.log4j.Logger;
+import org.apache.logging.log4j.LogManager;
 
 /**
  * The validated, server-side print plan (DESIGN.md §10.2). The client sends
@@ -51,7 +49,7 @@ import org.slf4j.LoggerFactory;
  * flag is set, batched by destination.
  */
 public final class PrintPlan {
-    private static final Logger LOGGER = LoggerFactory.getLogger(PrintPlan.class);
+    private static final Logger LOGGER = LogManager.getLogger(PrintPlan.class);
 
     private PrintPlan() {
     }
@@ -89,13 +87,16 @@ public final class PrintPlan {
      * @param entries            the client's plan entries
      * @param maxBatch           the server-side cap on patterns per request
      * @param groupByDestination batch the print order by destination
+     * @param level              the server level; the echoed input pattern is
+     *                           decoded through AE2's public pattern-details API
      */
     public static Result validate(RecipeManager recipeManager, HolderLookup.Provider registries,
-            ItemStack echoedInput, List<PlanEntry> entries, int maxBatch, boolean groupByDestination) {
+            ItemStack echoedInput, List<PlanEntry> entries, int maxBatch, boolean groupByDestination,
+            Level level) {
         if (entries.size() > maxBatch) {
             return reject("print batch exceeds the limit: " + entries.size() + " > " + maxBatch);
         }
-        Item rootGoal = rootGoalItem(echoedInput);
+        Item rootGoal = rootGoalItem(echoedInput, level);
         if (rootGoal == null) {
             return reject("input pattern does not decode to an item output");
         }
@@ -119,41 +120,82 @@ public final class PrintPlan {
             }
             List<AEKey> candidates = entry.selectedCandidates();
             List<IngredientView> slots = view.inputs();
-            for (int i = 0; i < candidates.size(); i++) {
-                // A recipe that exposes no input slots (opaque generic
-                // recipe) has nothing to check the candidates against; the
-                // claimed-output check above still applies.
-                if (!slots.isEmpty() && i >= slots.size()) {
-                    return reject("entry " + entry.recipeId() + " selects more candidates than it has input slots");
+            if (slots.isEmpty()) {
+                // No encoder can encode a recipe with no input slots:
+                // AE2's processing encoder requires at least one input
+                // (it throws otherwise) and a zero-input crafting
+                // pattern would be a free generator. Reject here rather
+                // than accept the plan and fail at encode time, where the
+                // entry would silently vanish from the print.
+                return reject("entry " + entry.recipeId() + " has no input slots and cannot be encoded");
+            } else {
+                // Blank grid slots (Ingredient.EMPTY) consume no input, so
+                // the client's candidate list holds one entry per
+                // non-blank slot, in slot order; the exact-size rule and
+                // the ingredient test both skip blanks.
+                int nonBlank = 0;
+                for (IngredientView slot : slots) {
+                    if (!slot.isEmpty()) {
+                        nonBlank++;
+                    }
                 }
-                if (i < slots.size() && candidates.get(i) instanceof AEItemKey itemKey
-                        && !slots.get(i).ingredient().test(itemKey.toStack())) {
-                    return reject("chosen candidate not accepted by recipe " + entry.recipeId());
+                if (candidates.size() != nonBlank) {
+                    return reject("entry " + entry.recipeId() + " selects " + candidates.size()
+                            + " candidates but the recipe has " + nonBlank + " non-blank input slots");
+                }
+                int ci = 0;
+                for (IngredientView slot : slots) {
+                    if (slot.isEmpty()) {
+                        continue;
+                    }
+                    if (!(candidates.get(ci) instanceof AEItemKey itemKey)) {
+                        return reject("entry " + entry.recipeId() + " has a non-item candidate");
+                    }
+                    if (!slot.ingredient().test(itemKey.toStack())) {
+                        return reject("chosen candidate not accepted by recipe " + entry.recipeId());
+                    }
+                    ci++;
                 }
             }
         }
 
         // Connectivity: every entry's output is the root goal or an
-        // ingredient of another entry. Closes the loop: a plan that does
-        // not produce the goal is a closed ingredient loop, which the
-        // ordering step below rejects as a cycle.
-        Set<Item> demanded = new HashSet<>();
-        for (RecipeView view : views.values()) {
-            for (IngredientView input : view.inputs()) {
+        // ingredient of another entry. An entry's own inputs do not count
+        // toward its own connectivity: a recipe that consumes its own
+        // output is connected only if that output is the root goal or feeds
+        // another entry. Closes the loop: a plan that does not produce the
+        // goal is a closed ingredient loop, which the ordering step below
+        // rejects as a cycle.
+        Map<ResourceLocation, Set<Item>> demandedBy = new HashMap<>();
+        for (PlanEntry entry : entries) {
+            Set<Item> demanded = new HashSet<>();
+            for (IngredientView input : views.get(entry.recipeId()).inputs()) {
                 demanded.addAll(input.candidates());
             }
+            demandedBy.put(entry.recipeId(), demanded);
         }
         for (PlanEntry entry : entries) {
             if (!(entry.output() instanceof AEItemKey output)) {
                 return reject("entry " + entry.recipeId() + " has a non-item output");
             }
-            if (output.getItem() == rootGoal || demanded.contains(output.getItem())) {
+            Item produced = output.getItem();
+            if (produced == rootGoal) {
                 continue;
             }
-            return reject("unconnected entry: " + entry.recipeId());
+            boolean demandedByAnother = false;
+            for (PlanEntry other : entries) {
+                if (!other.recipeId().equals(entry.recipeId())
+                        && demandedBy.get(other.recipeId()).contains(produced)) {
+                    demandedByAnother = true;
+                    break;
+                }
+            }
+            if (!demandedByAnother) {
+                return reject("unconnected entry: " + entry.recipeId());
+            }
         }
 
-        List<PlanEntry> ordered = order(entries, views, recipes, groupByDestination);
+        List<PlanEntry> ordered = order(entries, views, recipes, rootGoal, groupByDestination);
         if (ordered == null) {
             return reject("plan contains a recipe cycle");
         }
@@ -243,7 +285,7 @@ public final class PrintPlan {
      */
     @Nullable
     private static List<PlanEntry> order(List<PlanEntry> entries, Map<ResourceLocation, RecipeView> views,
-            Map<ResourceLocation, Recipe<?>> recipes, boolean groupByDestination) {
+            Map<ResourceLocation, Recipe<?>> recipes, Item rootGoal, boolean groupByDestination) {
         Map<ResourceLocation, List<ResourceLocation>> dependents = new HashMap<>();
         Map<ResourceLocation, Integer> unmet = new HashMap<>();
         for (PlanEntry entry : entries) {
@@ -256,7 +298,13 @@ public final class PrintPlan {
                 for (Item candidate : input.candidates()) {
                     for (PlanEntry producer : entries) {
                         if (producer.recipeId().equals(consumer.recipeId())) {
-                            continue;
+                            // A self-dependency is a real cycle unless the
+                            // entry produces the root goal, whose seed is
+                            // supplied externally by the user.
+                            if (consumer.output() instanceof AEItemKey consumerOut
+                                    && consumerOut.getItem() == rootGoal) {
+                                continue;
+                            }
                         }
                         if (producer.output() instanceof AEItemKey out && out.getItem() == candidate) {
                             dependencies.add(producer.recipeId());
@@ -336,32 +384,33 @@ public final class PrintPlan {
 
     private static String machineType(Recipe<?> recipe) {
         ResourceLocation key = BuiltInRegistries.RECIPE_TYPE.getKey(recipe.getType());
-        return key != null ? key.toString() : recipe.getType().toString();
+        // The path (not the full key) matches SourceSelector.destination, so
+        // the MACHINE batch sort order is consistent with the client display.
+        return key != null ? key.getPath() : recipe.getType().toString();
     }
 
     /**
      * The root goal: the primary output item of the echoed input pattern,
-     * read straight from the pattern's data components (no Level needed,
-     * unlike {@code PatternDetailsHelper.decodePattern}).
+     * decoded through AE2's public pattern-details API
+     * ({@code PatternDetailsHelper.decodePattern}). The decoder is
+     * registered by AE2 itself when {@code PatternDetailsHelper} loads, so
+     * no mod-internal pattern classes are referenced here; the result is
+     * read off the public {@link IPatternDetails} interface.
      */
     @Nullable
-    private static Item rootGoalItem(ItemStack pattern) {
+    private static Item rootGoalItem(ItemStack pattern, Level level) {
         if (!PatternDetailsHelper.isEncodedPattern(pattern)) {
             return null;
         }
-        if (pattern.get(AEComponents.ENCODED_CRAFTING_PATTERN) instanceof EncodedCraftingPattern crafting) {
-            return crafting.result().isEmpty() ? null : crafting.result().getItem();
+        IPatternDetails details = PatternDetailsHelper.decodePattern(pattern, level);
+        if (details == null) {
+            return null;
         }
-        if (pattern.get(AEComponents.ENCODED_PROCESSING_PATTERN) instanceof EncodedProcessingPattern processing) {
-            return processing.sparseOutputs().isEmpty() ? null : itemOf(processing.sparseOutputs().get(0));
+        GenericStack primary = details.getPrimaryOutput();
+        if (primary == null || !(primary.what() instanceof AEItemKey itemKey)) {
+            return null;
         }
-        if (pattern.get(AEComponents.ENCODED_STONECUTTING_PATTERN) instanceof EncodedStonecuttingPattern stonecutting) {
-            return stonecutting.output().isEmpty() ? null : stonecutting.output().getItem();
-        }
-        if (pattern.get(AEComponents.ENCODED_SMITHING_TABLE_PATTERN) instanceof EncodedSmithingTablePattern smithing) {
-            return smithing.resultItem().isEmpty() ? null : smithing.resultItem().getItem();
-        }
-        return null;
+        return itemKey.getItem();
     }
 
     private static boolean produces(RecipeView view, AEKey claimed) {
@@ -374,11 +423,6 @@ public final class PrintPlan {
             }
         }
         return false;
-    }
-
-    @Nullable
-    private static Item itemOf(GenericStack stack) {
-        return stack.what() instanceof AEItemKey itemKey ? itemKey.getItem() : null;
     }
 
     private static Result reject(String reason) {
