@@ -1,6 +1,7 @@
 package dev.cryolithic.rpp.tree;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -101,27 +102,18 @@ class TreeSelectionTest {
     }
 
     @Test
-    void planConnectednessPredicate() {
+    void patternCountExcludesRawInputRows() {
         RecipeIndexFixture f = new RecipeIndexFixture();
-        Item x = f.item("pc_x");
-        Item a = f.item("pc_a");
-        Item c = f.item("pc_c");
-        Item y = f.item("pc_y");
-        Item b = f.item("pc_b");
-        ItemNode root = builder(f.buildIndex()).buildRoot(AEItemKey.of(x), 1);
+        Item x = f.item("pcn_x");
+        Item a = f.item("pcn_a");
+        Item c = f.item("pcn_c");
+        f.shapeless("pcn_a_to_x", x, 1, Ingredient.of(a));
+        f.shapeless("pcn_c_to_a", a, 1, Ingredient.of(c));
 
-        // connected: X <- a <- c, each output consumed by the row above
-        List<PlanRow> connected = List.of(
-                new PlanRow(id("r1"), AEItemKey.of(x), List.of(AEItemKey.of(a)), false, 1),
-                new PlanRow(id("r2"), AEItemKey.of(a), List.of(AEItemKey.of(c)), false, 1),
-                new PlanRow(null, AEItemKey.of(c), List.of(), true, 1));
-        assertTrue(TreeSelection.isConnected(root, connected), "every output is the goal or an ingredient");
-
-        // disconnected: Y's output is neither the goal nor an ingredient of any row
-        List<PlanRow> disconnected = List.of(
-                new PlanRow(id("r1"), AEItemKey.of(x), List.of(AEItemKey.of(b)), false, 1),
-                new PlanRow(id("r2"), AEItemKey.of(y), List.of(AEItemKey.of(a)), false, 1));
-        assertFalse(TreeSelection.isConnected(root, disconnected), "a dangling output breaks connectedness");
+        ItemNode root = builder(f.buildIndex()).buildRoot(AEItemKey.of(x), 2);
+        assertEquals(2, TreeSelection.patternCount(root), "default: two patterns, raw inputs excluded");
+        TreeSelection.deselectAll(root);
+        assertEquals(0, TreeSelection.patternCount(root), "a raw-input row is not a pattern");
     }
 
     @Test
@@ -145,6 +137,70 @@ class TreeSelectionTest {
         root.select(3); // manually check the fourth
         assertEquals(4, root.selected().cardinality(), "manual selection is uncapped");
         assertTrue(TreeSelection.isOverCap(root, CONFIG.maxSourcesPerItem()), "over-cap is flagged for the GUI");
+    }
+
+    @Test
+    void planRowKeysByproductRecipesOnTheGoalOutput() {
+        RecipeIndexFixture f = new RecipeIndexFixture();
+        Item goal = f.item("bp2_goal");
+        Item primary = f.item("bp2_primary");
+        Item input = f.item("bp2_input");
+        // outputs[0] is the primary product; the goal is the secondary output
+        f.byproduct("bp2_recipe", List.of(f.stack(primary, 8), f.stack(goal, 1)), Ingredient.of(input));
+
+        ItemNode root = builder(f.buildIndex()).buildRoot(AEItemKey.of(goal), 1);
+        // the byproduct recipe is rejected by default; force-select it
+        int i = recipeIndex(root, "rpp:bp2_recipe");
+        root.select(i);
+        root.recipes().get(i).setUserOverridden(true);
+
+        PlanRow row = planRowOf(root, "rpp:bp2_recipe");
+        assertTrue(row.output() instanceof AEItemKey, "the row output is an item key");
+        Item outputItem = ((AEItemKey) row.output()).getItem();
+        assertEquals(goal, outputItem, "the row is keyed on the goal, not outputs[0]");
+        assertNotEquals(primary, outputItem);
+        assertEquals(1, row.yield(), "the yield is the goal's amount in the outputs");
+    }
+
+    @Test
+    void hasFlagsReportsFlaggedPlans() {
+        RecipeIndexFixture f = new RecipeIndexFixture();
+        Item x = f.item("hf_x");
+        Item a = f.item("hf_a");
+        Item primary = f.item("hf_primary");
+        f.shapeless("hf_craft", x, 1, Ingredient.of(a));
+        f.byproduct("hf_byproduct", List.of(f.stack(primary), f.stack(x)), Ingredient.of(a));
+
+        ItemNode root = builder(f.buildIndex()).buildRoot(AEItemKey.of(x), 1);
+        // default: only the trusted crafting recipe is selected
+        List<PlanRow> unflagged = TreeSelection.planRows(root);
+        assertFalse(TreeSelection.hasFlags(root, unflagged, 0.95), "a clean plan has no flags");
+
+        // force-select the rejected byproduct: the plan now carries a flag
+        int i = recipeIndex(root, "rpp:hf_byproduct");
+        root.select(i);
+        root.recipes().get(i).setUserOverridden(true);
+        List<PlanRow> flagged = TreeSelection.planRows(root);
+        assertTrue(TreeSelection.hasFlags(root, flagged, 0.95), "a force-selected rejected recipe is a flag");
+    }
+
+    private static int recipeIndex(ItemNode root, String id) {
+        List<RecipeNode> recipes = root.recipes();
+        for (int i = 0; i < recipes.size(); i++) {
+            if (recipes.get(i).recipe().id().toString().equals(id)) {
+                return i;
+            }
+        }
+        throw new AssertionError("no recipe " + id + " at root");
+    }
+
+    private static PlanRow planRowOf(ItemNode root, String id) {
+        for (PlanRow row : TreeSelection.planRows(root)) {
+            if (row.recipeId() != null && row.recipeId().toString().equals(id)) {
+                return row;
+            }
+        }
+        throw new AssertionError("no plan row for " + id);
     }
 
     private static ResourceLocation id(String path) {

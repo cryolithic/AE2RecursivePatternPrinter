@@ -1,9 +1,11 @@
 package dev.cryolithic.rpp.tree;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import appeng.api.stacks.AEItemKey;
 import dev.cryolithic.rpp.recipe.RecipeIndexFixture;
+import java.util.Map;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.crafting.Ingredient;
 import org.junit.jupiter.api.Test;
@@ -110,5 +112,40 @@ class CraftabilityOracleTest {
         // a different budget is a different memo entry
         assertEquals(Craftability.UNKNOWN, oracle.check(AEItemKey.of(a), 0));
         assertEquals(Craftability.CRAFTABLE_UNAMBIGUOUS, oracle.check(AEItemKey.of(a), 5));
+    }
+
+    @Test
+    void gappedShapedRecipeVerifiesInsteadOfUnknown() {
+        RecipeIndexFixture f = new RecipeIndexFixture();
+        Item plank = f.item("oragap_plank");
+        Item chest = f.item("oragap_chest");
+        // chest-like: 8 planks around a blank center slot
+        f.shapedGapped("oragap_chest_from_planks", chest, 1, Map.of('#', Ingredient.of(plank)),
+                "###", "# #", "###");
+
+        CraftabilityOracle oracle = new CraftabilityOracle(f.buildIndex());
+
+        assertEquals(Craftability.CRAFTABLE_UNAMBIGUOUS, oracle.check(AEItemKey.of(chest), 8),
+                "a blank grid slot imposes no constraint; the gapped recipe verifies");
+    }
+
+    @Test
+    void ambiguousCraftableGoalIsInCraftableFamily() {
+        RecipeIndexFixture f = new RecipeIndexFixture();
+        Item b1 = f.item("fam_b1");
+        Item b2 = f.item("fam_b2");
+        Item a = f.item("fam_a");
+        f.shapeless("fam_b1_to_a", a, 1, Ingredient.of(b1));
+        f.shapeless("fam_b2_to_a", a, 1, Ingredient.of(b2));
+
+        CraftabilityOracle oracle = new CraftabilityOracle(f.buildIndex());
+
+        // A goal with two different recipe paths is still craftable: the
+        // verdict stays in the CRAFTABLE family. The builder's auto-collapse
+        // trigger fires for the whole family, not just the unambiguous half.
+        Craftability verdict = oracle.check(AEItemKey.of(a), 8);
+        assertTrue(verdict == Craftability.CRAFTABLE_UNAMBIGUOUS || verdict == Craftability.CRAFTABLE_AMBIGUOUS,
+                "an ambiguous-but-craftable goal is in the CRAFTABLE family");
+        assertEquals(Craftability.CRAFTABLE_AMBIGUOUS, verdict);
     }
 }

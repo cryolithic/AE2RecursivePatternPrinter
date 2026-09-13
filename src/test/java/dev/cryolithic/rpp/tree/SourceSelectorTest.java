@@ -3,20 +3,37 @@ package dev.cryolithic.rpp.tree;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import appeng.api.stacks.AEItemKey;
 import appeng.api.stacks.AEKey;
+import appeng.api.stacks.GenericStack;
+import dev.cryolithic.rpp.recipe.IngredientView;
+import dev.cryolithic.rpp.recipe.RecipeAdapter;
+import dev.cryolithic.rpp.recipe.RecipeAdapters;
 import dev.cryolithic.rpp.recipe.RecipeIndex;
 import dev.cryolithic.rpp.recipe.RecipeIndexFixture;
 import dev.cryolithic.rpp.recipe.RecipeView;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import net.minecraft.core.HolderLookup;
+import net.minecraft.core.MappedRegistry;
+import net.minecraft.core.Registry;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.item.Item;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.crafting.Ingredient;
+import net.minecraft.world.item.crafting.Recipe;
+import net.minecraft.world.item.crafting.RecipeHolder;
+import net.minecraft.world.item.crafting.RecipeInput;
+import net.minecraft.world.item.crafting.RecipeManager;
+import net.minecraft.world.item.crafting.RecipeSerializer;
 import net.minecraft.world.item.crafting.RecipeType;
+import net.minecraft.world.level.Level;
 
 import org.junit.jupiter.api.Test;
 
@@ -67,8 +84,9 @@ class SourceSelectorTest {
         Item byproductPrimary = f.item("byproduct_primary");
         Item byproductInput = f.item("byproduct_input");
 
-        // smelt: 1 iron from 1 raw iron (furnace, vanilla)
-        f.machine("iron_smelt", RecipeType.simple(ResourceLocation.withDefaultNamespace("smelting")), f.stack(iron), Ingredient.of(rawIron));
+        // smelt: 1 iron from 1 raw iron (furnace, vanilla). The registered
+        // SMELTING instance is what an in-game smelting recipe carries.
+        f.machine("iron_smelt", RecipeType.SMELTING, f.stack(iron), Ingredient.of(rawIron));
         // block unpack: 9 iron from 1 block (crafting, vanilla) + forward
         f.shapeless("block_unpack", iron, 9, Ingredient.of(block));
         f.shapeless("iron_to_block", block, 1,
@@ -301,6 +319,84 @@ class SourceSelectorTest {
                 "a stonecutter recipe is a stonecutting pattern");
     }
 
+    @Test
+    void registeredModTypeIsNotVanillaAndHasStableDestination() {
+        RecipeIndexFixture f = new RecipeIndexFixture();
+        Item g = f.item("rm_goal");
+        Item a = f.item("rm_a");
+        Item b = f.item("rm_b");
+        RecipeType<?> modType = registeredType("modb", "enriching");
+        f.machine("rm_mod", modType, f.stack(g), Ingredient.of(a));
+        f.shapeless("rm_craft", g, 1, Ingredient.of(b));
+
+        RecipeIndex index = f.buildIndex();
+        // the destination is the registry path: stable across JVM runs,
+        // never an identity hash
+        assertEquals(Destination.machine("enriching"),
+                SourceSelector.destination(viewFor(index, g, "rm_mod")));
+
+        ItemNode root = builder(index).buildRoot(AEItemKey.of(g), 2);
+        assertEquals(Tier.PRIMARY, recipeById(root, "rpp:rm_craft").tier(),
+                "the vanilla crafting recipe outranks the registered mod type");
+        assertEquals(Tier.ALTERNATE, recipeById(root, "rpp:rm_mod").tier());
+    }
+
+    @Test
+    void registeredVanillaTypeKeepsVanillaClassification() {
+        RecipeIndexFixture f = new RecipeIndexFixture();
+        Item g = f.item("rv_goal");
+        Item a = f.item("rv_a");
+        Item b = f.item("rv_b");
+        // RecipeType.SMELTING is the registered minecraft:smelting instance
+        f.machine("rv_smelt", RecipeType.SMELTING, f.stack(g), Ingredient.of(a));
+        f.machine("rv_mod", registeredType("modb", "enriching"), f.stack(g), Ingredient.of(b));
+
+        RecipeIndex index = f.buildIndex();
+        assertEquals(Destination.machine("smelting"),
+                SourceSelector.destination(viewFor(index, g, "rv_smelt")),
+                "the registered smelting type keeps its machine destination");
+
+        ItemNode root = builder(index).buildRoot(AEItemKey.of(g), 2);
+        assertEquals(Tier.PRIMARY, recipeById(root, "rpp:rv_smelt").tier(),
+                "the registered vanilla type keeps the vanilla rank");
+        assertEquals(Tier.ALTERNATE, recipeById(root, "rpp:rv_mod").tier());
+    }
+
+    @Test
+    void unregisteredIdentityTypeIsNotVanilla() {
+        RecipeIndexFixture f = new RecipeIndexFixture();
+        Item g = f.item("iv_goal");
+        Item a = f.item("iv_a");
+        Item b = f.item("iv_b");
+        // a type that implements RecipeType without overriding toString():
+        // Object.toString() is an identity hash (e.g. "…Test$1@6f2b958e")
+        RecipeType<?> identityType = new RecipeType<>() {
+        };
+        f.machine("iv_a_mod", registeredType("modb", "enriching"), f.stack(g), Ingredient.of(a));
+        f.machine("iv_z_ident", identityType, f.stack(g), Ingredient.of(b));
+
+        ItemNode root = builder(f.buildIndex()).buildRoot(AEItemKey.of(g), 2);
+
+        // Neither candidate is vanilla: the identity type must not win the
+        // vanilla rank or the +25 score. The tie is broken by recipe id, so
+        // "iv_a_mod" becomes PRIMARY — under the old toString heuristic the
+        // identity type (no colon) would have been "vanilla" and would have
+        // taken the rank outright.
+        assertEquals(Tier.PRIMARY, recipeById(root, "rpp:iv_a_mod").tier());
+        assertEquals(Tier.ALTERNATE, recipeById(root, "rpp:iv_z_ident").tier());
+    }
+
+    /** Registers a recipe type in {@code BuiltInRegistries.RECIPE_TYPE} (JVM-wide, once). */
+    private static RecipeType<?> registeredType(String namespace, String path) {
+        ResourceLocation loc = ResourceLocation.fromNamespaceAndPath(namespace, path);
+        if (!BuiltInRegistries.RECIPE_TYPE.containsKey(loc)) {
+            ((MappedRegistry<RecipeType<?>>) BuiltInRegistries.RECIPE_TYPE).unfreeze();
+            RecipeType<?> type = RecipeType.simple(loc);
+            Registry.register(BuiltInRegistries.RECIPE_TYPE, loc, type);
+        }
+        return BuiltInRegistries.RECIPE_TYPE.get(loc);
+    }
+
     private static ResourceLocation id(String path) {
         return ResourceLocation.fromNamespaceAndPath("rpp", path);
     }
@@ -403,5 +499,216 @@ class SourceSelectorTest {
         assertEquals(3, root.selected().cardinality(), "auto-checked is capped at maxSourcesPerItem");
         root.select(3); // manually check the fourth
         assertEquals(4, root.selected().cardinality(), "manual selection is uncapped");
+    }
+
+    @Test
+    void gappedRecipeBlankSlotIsNotADeadEnd() {
+        RecipeIndexFixture f = new RecipeIndexFixture();
+        Item plank = f.item("gapss_plank");
+        Item chest = f.item("gapss_chest");
+        // sole source of the chest, with a blank center slot
+        f.shapedGapped("gapss_chest_from_planks", chest, 1, Map.of('#', Ingredient.of(plank)),
+                "###", "# #", "###");
+
+        ItemNode root = builder(f.buildIndex()).buildRoot(AEItemKey.of(chest), 2);
+
+        RecipeNode recipe = recipeById(root, "rpp:gapss_chest_from_planks");
+        assertEquals(Tier.PRIMARY, recipe.tier(),
+                "a blank grid slot is not an input with no source");
+        assertNull(recipe.rejectionReason(),
+                "the dead-end rejection must not fire for a blank slot");
+        assertTrue(root.selected().get(0), "the sole live candidate is auto-selected");
+    }
+
+    @Test
+    void primaryIsSubjectToTheDestinationCap() {
+        RecipeIndexFixture f = new RecipeIndexFixture();
+        Item ingot = f.item("modb", "ingot");
+        Item block = f.item("modb", "ingot_block");
+        Item x = f.item("cap39_x");
+        // A lossless block-unpack with a goal-namespace match (ranks above
+        // the primary) and a modc crafting primary: both feed the assembler
+        f.shapeless("modb:ingot_unpack", ingot, 9, Ingredient.of(block));
+        f.shapeless("modb:ingot_to_block", block, 1,
+                Ingredient.of(ingot), Ingredient.of(ingot), Ingredient.of(ingot),
+                Ingredient.of(ingot), Ingredient.of(ingot), Ingredient.of(ingot),
+                Ingredient.of(ingot), Ingredient.of(ingot), Ingredient.of(ingot));
+        f.shapeless("modc:ingot_from_x", ingot, 1, Ingredient.of(x));
+
+        ItemNode root = builder(f.buildIndex()).buildRoot(AEItemKey.of(ingot), 2);
+
+        assertEquals(Tier.ALTERNATE, recipeById(root, "modb:ingot_unpack").tier(),
+                "the lossless reversal with a namespace match is promoted");
+        assertEquals(Tier.PRIMARY, recipeById(root, "modc:ingot_from_x").tier());
+
+        // Exactly one auto-checked source in the assembler class: the
+        // higher-ranked ALTERNATE keeps its default check, the PRIMARY is
+        // capped out of its destination class, and the per-item cap holds
+        assertEquals(1, root.selected().cardinality(),
+                "at most one default-checked source per destination class");
+        assertTrue(root.selected().get(0), "the higher-ranked ALTERNATE is auto-checked");
+        assertFalse(root.selected().get(1), "the PRIMARY is capped out of its destination class");
+    }
+
+    @Test
+    void unknownInputRanksDeepestNotShallowest() {
+        RecipeIndexFixture f = new RecipeIndexFixture();
+        Item goal = f.item("depth_goal");
+        Item shallow = f.item("depth_shallow");
+        Item shallowRaw = f.item("depth_shallow_raw");
+        // A verified one-level chain: shallow -> raw, raw is a leaf
+        f.shapeless("depth_shallow_recipe", goal, 1, Ingredient.of(shallow));
+        f.shapeless("depth_shallow_source", shallow, 1, Ingredient.of(shallowRaw));
+        // A nine-level chain: one level deeper than the root's budget of
+        // eight, so the oracle exhausts its budget and returns UNKNOWN
+        Item deep = f.item("depth_deep");
+        f.shapeless("depth_deep_recipe", goal, 1, Ingredient.of(deep));
+        Item prev = deep;
+        for (int i = 1; i <= 9; i++) {
+            Item next = f.item("depth_d" + i);
+            f.shapeless("depth_r" + i, prev, 1, Ingredient.of(next));
+            prev = next;
+        }
+
+        ItemNode root = builder(f.buildIndex()).buildRoot(AEItemKey.of(goal), 2);
+
+        assertEquals(Tier.PRIMARY, recipeById(root, "rpp:depth_shallow_recipe").tier(),
+                "the shallow verified input outranks the budget-exhausted one");
+        assertEquals(Tier.ALTERNATE, recipeById(root, "rpp:depth_deep_recipe").tier());
+        assertEquals(9, recipeById(root, "rpp:depth_deep_recipe").oracleDepth(),
+                "UNKNOWN is the maximum depth: budget + 1, never clamped to 0");
+        assertEquals(1, recipeById(root, "rpp:depth_shallow_recipe").oracleDepth());
+    }
+
+    @Test
+    void unknownInputIsNotADeadEnd() {
+        RecipeIndexFixture f = new RecipeIndexFixture();
+        Item goal = f.item("deadend_goal");
+        Item deep = f.item("deadend_deep");
+        f.shapeless("deadend_deep_recipe", goal, 1, Ingredient.of(deep));
+        // Nine levels deep: the root's budget of eight runs out one level
+        // before the chain bottoms out, so the oracle verdict is UNKNOWN
+        Item prev = deep;
+        for (int i = 1; i <= 9; i++) {
+            Item next = f.item("deadend_d" + i);
+            f.shapeless("deadend_r" + i, prev, 1, Ingredient.of(next));
+            prev = next;
+        }
+
+        ItemNode root = builder(f.buildIndex()).buildRoot(AEItemKey.of(goal), 2);
+
+        RecipeNode recipe = recipeById(root, "rpp:deadend_deep_recipe");
+        assertEquals(Tier.PRIMARY, recipe.tier(),
+                "budget exhaustion is not 'an item with no source'");
+        assertNull(recipe.rejectionReason(),
+                "the dead-end rejection must not fire on an UNKNOWN input");
+        assertTrue(root.isForced(), "the sole live candidate is forced");
+        assertTrue(root.selected().get(0), "the forced candidate is auto-selected");
+    }
+
+    @Test
+    void inputWithNoCandidatesIsStillADeadEnd() {
+        RecipeIndexFixture f = new RecipeIndexFixture();
+        Item goal = f.item("nocand_goal");
+        Item leaf = f.item("nocand_leaf"); // no recipe at all: a true leaf
+        RecipeType<?> type = RecipeType.simple(ResourceLocation.fromNamespaceAndPath("rpp", "nocand_type"));
+        Recipe<?> recipe = new Recipe<>() {
+            @Override
+            public boolean matches(RecipeInput input, Level level) {
+                return false;
+            }
+
+            @Override
+            public ItemStack assemble(RecipeInput input, HolderLookup.Provider registries) {
+                return ItemStack.EMPTY;
+            }
+
+            @Override
+            public boolean canCraftInDimensions(int width, int height) {
+                return false;
+            }
+
+            @Override
+            public ItemStack getResultItem(HolderLookup.Provider registries) {
+                return new ItemStack(goal);
+            }
+
+            @Override
+            public RecipeSerializer<?> getSerializer() {
+                throw new UnsupportedOperationException();
+            }
+
+            @Override
+            public RecipeType<?> getType() {
+                return type;
+            }
+        };
+        // The adapter's view carries an ingredient that resolved to no
+        // candidates at all: a true dead end, distinct from an UNKNOWN
+        // (budget-exhausted) input, which is still a valid source
+        RecipeAdapter adapter = new RecipeAdapter() {
+            @Override
+            public RecipeType<?> type() {
+                return type;
+            }
+
+            @Override
+            public RecipeView view(RecipeHolder<?> holder, HolderLookup.Provider registries) {
+                return new RecipeView(
+                        ResourceLocation.fromNamespaceAndPath("rpp", "nocand_recipe"),
+                        type,
+                        List.of(new IngredientView(Ingredient.of(leaf), List.of())),
+                        List.of(new GenericStack(AEItemKey.of(goal), 1)),
+                        0, 0, true);
+            }
+        };
+        RecipeAdapters.register(adapter);
+        RecipeManager manager = new RecipeManager(f.provider());
+        manager.replaceRecipes(List.of(new RecipeHolder<>(
+                ResourceLocation.fromNamespaceAndPath("rpp", "nocand_recipe"), recipe)));
+        RecipeIndex index = RecipeIndex.build(manager, f.provider(), Set.of());
+
+        ItemNode root = builder(index).buildRoot(AEItemKey.of(goal), 2);
+
+        RecipeNode node = recipeById(root, "rpp:nocand_recipe");
+        assertEquals(Tier.REJECTED, node.tier(),
+                "an input with no candidates at all is a true dead end");
+        assertEquals("requires an item with no source", node.rejectionReason());
+    }
+
+    @Test
+    void yieldPromotionComparesPerItemNotPerSlot() {
+        RecipeIndexFixture f = new RecipeIndexFixture();
+        Item goal = f.item("yield_goal");
+        Item p = f.item("yield_p");
+        Item a = f.item("yield_a");
+        Item d = f.item("yield_d");
+        Item b1 = f.item("yield_b1");
+        Item b2 = f.item("yield_b2");
+        Item b3 = f.item("yield_b3");
+        // Primary: one item in, one out
+        f.shapeless("yield_r1", goal, 1, Ingredient.of(p));
+        // Nine items in one slot, nine out: equal per-item yield
+        f.shapeless("yield_r2", goal, 9, Ingredient.of(new ItemStack(a, 9)));
+        // One item in, eighteen out: a genuinely higher per-item yield
+        f.shapeless("yield_r3", goal, 18, Ingredient.of(d));
+        // Three slots of three items each, nine out: equal per-item yield
+        f.shapeless("yield_r4", goal, 9,
+                Ingredient.of(new ItemStack(b1, 3)),
+                Ingredient.of(new ItemStack(b2, 3)),
+                Ingredient.of(new ItemStack(b3, 3)));
+
+        SourceSelector.SelectionConfig config = new SourceSelector.SelectionConfig(
+                0.95, true, 3, 1, true, List.of("minecraft", "ae2"));
+        ItemNode root = builder(f.buildIndex(), config, null).buildRoot(AEItemKey.of(goal), 2);
+
+        assertEquals(Tier.PRIMARY, recipeById(root, "rpp:yield_r1").tier());
+        assertEquals(Tier.ALTERNATE, recipeById(root, "rpp:yield_r3").tier(),
+                "a genuinely higher per-item yield is promoted");
+        assertEquals(Tier.REJECTED, recipeById(root, "rpp:yield_r2").tier(),
+                "nine out of nine items is not above one out of one");
+        assertEquals("conservative: not a promoted path", recipeById(root, "rpp:yield_r2").rejectionReason());
+        assertEquals(Tier.REJECTED, recipeById(root, "rpp:yield_r4").tier(),
+                "nine out of nine items is not above one out of one, spread over three slots");
     }
 }

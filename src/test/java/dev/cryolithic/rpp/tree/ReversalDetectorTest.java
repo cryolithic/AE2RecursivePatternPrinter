@@ -9,6 +9,7 @@ import dev.cryolithic.rpp.recipe.RecipeIndex;
 import dev.cryolithic.rpp.recipe.RecipeIndexFixture;
 import dev.cryolithic.rpp.recipe.RecipeView;
 import java.util.List;
+import java.util.Map;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.crafting.Ingredient;
@@ -45,11 +46,10 @@ class ReversalDetectorTest {
 
         RecipeView candidate = viewFor(index, iron, "rv_block_to_iron");
         assertEquals(1.0, detector.roundTripEfficiency(AEItemKey.of(iron), candidate), 1e-9);
-        assertFalse(detector.consumesExtraInputs(AEItemKey.of(iron), candidate));
     }
 
     @Test
-    void pickaxeMeltScoresOneThirdWithExtraInputs() {
+    void pickaxeMeltScoresOneThird() {
         RecipeIndexFixture f = new RecipeIndexFixture();
         Item iron = f.item("rv_pick_iron");
         Item pickaxe = f.item("rv_pickaxe");
@@ -65,7 +65,6 @@ class ReversalDetectorTest {
 
         RecipeView candidate = viewFor(index, iron, "rv_pickaxe_to_iron");
         assertEquals(1.0 / 3.0, detector.roundTripEfficiency(AEItemKey.of(iron), candidate), 1e-9);
-        assertTrue(detector.consumesExtraInputs(AEItemKey.of(iron), candidate));
     }
 
     @Test
@@ -99,7 +98,6 @@ class ReversalDetectorTest {
 
         RecipeView candidate = viewFor(index, iron, "rv_norev_block_to_iron");
         assertTrue(Double.isNaN(detector.roundTripEfficiency(AEItemKey.of(iron), candidate)));
-        assertFalse(detector.consumesExtraInputs(AEItemKey.of(iron), candidate));
     }
 
     @Test
@@ -161,5 +159,87 @@ class ReversalDetectorTest {
 
         RecipeView candidate = viewFor(index, iron, "rv_tag2_block_to_iron");
         assertTrue(Double.isNaN(detector.roundTripEfficiency(AEItemKey.of(iron), candidate)));
+    }
+
+    @Test
+    void gappedForwardRecipeStillScoresOnePointZero() {
+        RecipeIndexFixture f = new RecipeIndexFixture();
+        Item iron = f.item("rvgap_iron");
+        Item block = f.item("rvgap_block");
+        // candidate: 1 block -> 3 iron
+        f.shapeless("rvgap_block_to_iron", iron, 3, Ingredient.of(block));
+        // forward: 3 iron + 1 blank slot -> 1 block (a gapped shaped recipe)
+        f.shapedGapped("rvgap_iron_to_block", block, 1, Map.of('#', Ingredient.of(iron)),
+                "##", "# ");
+        RecipeIndex index = f.buildIndex();
+        ReversalDetector detector = new ReversalDetector(index, NO_TAGS);
+
+        RecipeView candidate = viewFor(index, iron, "rvgap_block_to_iron");
+        assertEquals(1.0, detector.roundTripEfficiency(AEItemKey.of(iron), candidate), 1e-9);
+    }
+
+    @Test
+    void memoKeyIncludesOutputAmount() {
+        RecipeIndexFixture f = new RecipeIndexFixture();
+        Item iron = f.item("rv_memo_iron");
+        Item block = f.item("rv_memo_block");
+        // two candidates sharing (goal, input) but differing in output
+        // amount: vanilla 1 block -> 9 iron, modded 1 block -> 4 iron
+        f.shapeless("rv_memo_block_to_9", iron, 9, Ingredient.of(block));
+        f.shapeless("rv_memo_block_to_4", iron, 4, Ingredient.of(block));
+        // forward: 9 iron -> 1 block
+        f.shapeless("rv_memo_iron_to_block", block, 1,
+                Ingredient.of(iron), Ingredient.of(iron), Ingredient.of(iron),
+                Ingredient.of(iron), Ingredient.of(iron), Ingredient.of(iron),
+                Ingredient.of(iron), Ingredient.of(iron), Ingredient.of(iron));
+        RecipeIndex index = f.buildIndex();
+        ReversalDetector detector = new ReversalDetector(index, NO_TAGS);
+
+        RecipeView lossless = viewFor(index, iron, "rv_memo_block_to_9");
+        RecipeView lossy = viewFor(index, iron, "rv_memo_block_to_4");
+        // query the lossy candidate first: under the old (goal, input) memo
+        // key it would read the lossless candidate's cached efficiency
+        assertEquals(4.0 / 9.0, detector.roundTripEfficiency(AEItemKey.of(iron), lossy), 1e-9);
+        assertEquals(1.0, detector.roundTripEfficiency(AEItemKey.of(iron), lossless), 1e-9);
+        // the 0.44 round trip is below the tiering threshold: recycling,
+        // not a lossless storage form
+        assertTrue(detector.roundTripEfficiency(AEItemKey.of(iron), lossy)
+                < SourceSelector.SelectionConfig.DEFAULTS.minRoundTripEfficiency());
+    }
+
+    @Test
+    void goalUnitsCountStackCountsNotSlots() {
+        RecipeIndexFixture f = new RecipeIndexFixture();
+        Item iron = f.item("rv_count_iron");
+        Item block = f.item("rv_count_block");
+        // candidate: 1 block -> 9 iron; forward consumes the goal in a
+        // single count-9 ingredient: 9 iron -> 1 block
+        f.shapeless("rv_count_block_to_iron", iron, 9, Ingredient.of(block));
+        f.shapeless("rv_count_iron_to_block", block, 1, Ingredient.of(f.stack(iron, 9)));
+        RecipeIndex index = f.buildIndex();
+        ReversalDetector detector = new ReversalDetector(index, NO_TAGS);
+
+        RecipeView candidate = viewFor(index, iron, "rv_count_block_to_iron");
+        // m is 9 goal units, not 1 slot: (9/1)/(9/1) = 1.0, not 9.0
+        assertEquals(1.0, detector.roundTripEfficiency(AEItemKey.of(iron), candidate), 1e-9);
+    }
+
+    @Test
+    void goalUnitsInCountedIngredient() {
+        RecipeIndexFixture f = new RecipeIndexFixture();
+        Item iron = f.item("rv_c3_iron");
+        Item pickaxe = f.item("rv_c3_pickaxe");
+        Item flux = f.item("rv_c3_flux");
+        // candidate: 1 pickaxe -> 1 iron; forward consumes the goal in a
+        // single count-3 ingredient: 3 iron + 1 flux -> 1 pickaxe
+        f.shapeless("rv_c3_pickaxe_to_iron", iron, 1, Ingredient.of(pickaxe));
+        f.shapeless("rv_c3_iron_to_pickaxe", pickaxe, 1,
+                Ingredient.of(f.stack(iron, 3)), Ingredient.of(flux));
+        RecipeIndex index = f.buildIndex();
+        ReversalDetector detector = new ReversalDetector(index, NO_TAGS);
+
+        RecipeView candidate = viewFor(index, iron, "rv_c3_pickaxe_to_iron");
+        // m is 3 goal units, not 1 slot: (1/1)/(3/1) = 1/3, not 1.0
+        assertEquals(1.0 / 3.0, detector.roundTripEfficiency(AEItemKey.of(iron), candidate), 1e-9);
     }
 }

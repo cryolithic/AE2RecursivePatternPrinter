@@ -1,7 +1,16 @@
 package dev.cryolithic.rpp.recipe;
 
+import appeng.api.crafting.IPatternDetails;
+import appeng.api.crafting.IPatternDetailsDecoder;
+import appeng.api.crafting.IPatternDetails.IInput;
+import appeng.api.crafting.PatternDetailsHelper;
+import appeng.api.ids.AEComponents;
 import appeng.api.stacks.AEItemKey;
 import appeng.api.stacks.GenericStack;
+import appeng.crafting.pattern.EncodedCraftingPattern;
+import appeng.crafting.pattern.EncodedProcessingPattern;
+import appeng.crafting.pattern.EncodedSmithingTablePattern;
+import appeng.crafting.pattern.EncodedStonecuttingPattern;
 import com.mojang.serialization.MapCodec;
 import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
@@ -119,6 +128,79 @@ public final class RecipeIndexFixture {
         SharedConstants.tryDetectVersion();
         Bootstrap.bootStrap();
         ((MappedRegistry<Item>) BuiltInRegistries.ITEM).unfreeze();
+        registerTestPatternDecoder();
+    }
+
+    private static boolean testDecoderRegistered;
+
+    /**
+     * Registers a bare-JVM pattern decoder. AE2's own decoder
+     * (auto-registered when {@code PatternDetailsHelper} loads) requires a
+     * non-null {@link Level}; a bare JVM has none. This decoder handles
+     * the null-Level case by reading the encoded pattern's data component
+     * directly — test-only internal access, consistent with the other
+     * tests that read {@code Encoded*Pattern} observables. Production code
+     * never sees it: on a real server the Level is non-null and AE2's
+     * decoder answers first.
+     */
+    private static void registerTestPatternDecoder() {
+        if (testDecoderRegistered) {
+            return;
+        }
+        testDecoderRegistered = true;
+        PatternDetailsHelper.registerDecoder(new IPatternDetailsDecoder() {
+            @Override
+            public boolean isEncodedPattern(ItemStack stack) {
+                return stack.get(AEComponents.ENCODED_CRAFTING_PATTERN) != null
+                        || stack.get(AEComponents.ENCODED_PROCESSING_PATTERN) != null
+                        || stack.get(AEComponents.ENCODED_STONECUTTING_PATTERN) != null
+                        || stack.get(AEComponents.ENCODED_SMITHING_TABLE_PATTERN) != null;
+            }
+
+            @Override
+            public IPatternDetails decodePattern(AEItemKey key, Level level) {
+                if (key.get(AEComponents.ENCODED_CRAFTING_PATTERN) instanceof EncodedCraftingPattern c
+                        && !c.result().isEmpty()) {
+                    return outputDetails(c.result());
+                }
+                if (key.get(AEComponents.ENCODED_PROCESSING_PATTERN) instanceof EncodedProcessingPattern p
+                        && !p.sparseOutputs().isEmpty()) {
+                    return outputDetails(p.sparseOutputs().get(0));
+                }
+                if (key.get(AEComponents.ENCODED_STONECUTTING_PATTERN) instanceof EncodedStonecuttingPattern s
+                        && !s.output().isEmpty()) {
+                    return outputDetails(s.output());
+                }
+                if (key.get(AEComponents.ENCODED_SMITHING_TABLE_PATTERN) instanceof EncodedSmithingTablePattern s
+                        && !s.resultItem().isEmpty()) {
+                    return outputDetails(s.resultItem());
+                }
+                return null;
+            }
+        });
+    }
+
+    private static IPatternDetails outputDetails(ItemStack result) {
+        return outputDetails(new GenericStack(AEItemKey.of(result), result.getCount()));
+    }
+
+    private static IPatternDetails outputDetails(GenericStack primary) {
+        return new IPatternDetails() {
+            @Override
+            public AEItemKey getDefinition() {
+                throw new UnsupportedOperationException("test stub");
+            }
+
+            @Override
+            public IInput[] getInputs() {
+                throw new UnsupportedOperationException("test stub");
+            }
+
+            @Override
+            public List<GenericStack> getOutputs() {
+                return List.of(primary);
+            }
+        };
     }
 
     /** Registers and returns a test item named {@code rpp:<name>}. */
@@ -172,6 +254,29 @@ public final class RecipeIndexFixture {
         return add(new RecipeHolder<>(id(name), recipe));
     }
 
+    /**
+     * A shaped recipe with a genuine interior blank slot: the rows express
+     * the blank slot as a space (e.g. "###", "# #", "###" is chest-like).
+     * {@code ShapedRecipePattern.of} fills a space with
+     * {@code Ingredient.EMPTY}, so the extracted view carries a
+     * zero-candidate slot — the case the plain {@code shaped} helper
+     * cannot express, because its pattern map never holds a blank entry.
+     */
+    public RecipeHolder<?> shapedGapped(String name, Item output, int count, Map<Character, Ingredient> pattern, String... rows) {
+        RecipeHolder<?> holder = shaped(name, output, count, pattern, rows);
+        boolean blank = false;
+        for (Ingredient ingredient : ((ShapedRecipe) holder.value()).getIngredients()) {
+            if (ingredient.isEmpty()) {
+                blank = true;
+                break;
+            }
+        }
+        if (!blank) {
+            throw new IllegalArgumentException("shapedGapped " + name + " has no blank slot");
+        }
+        return holder;
+    }
+
     /** A shapeless recipe. */
     public RecipeHolder<?> shapeless(String name, Item output, int count, Ingredient... inputs) {
         boot();
@@ -217,6 +322,15 @@ public final class RecipeIndexFixture {
             @Override
             public RecipeType<?> getType() {
                 return type;
+            }
+
+            @Override
+            public NonNullList<Ingredient> getIngredients() {
+                NonNullList<Ingredient> ingredients = NonNullList.create();
+                for (Ingredient ingredient : list) {
+                    ingredients.add(ingredient);
+                }
+                return ingredients;
             }
         };
         return add(new RecipeHolder<>(id(name), recipe));
@@ -384,6 +498,12 @@ public final class RecipeIndexFixture {
     /** Builds the index with an explicit blacklist (see {@link RecipeIndex#build}). */
     public RecipeIndex buildIndex(Collection<String> blacklistedTypes) {
         return RecipeIndex.build(manager(), provider(), blacklistedTypes);
+    }
+
+    /** Builds the index with an explicit blacklist and trust filter (see {@link RecipeIndex#build}). */
+    public RecipeIndex buildIndex(Collection<String> blacklistedTypes, boolean requireTrusted) {
+        return RecipeIndex.build(manager(), provider(), blacklistedTypes,
+                RecipeIndex.resolveIngredientItems(manager(), blacklistedTypes), requireTrusted);
     }
 
     private RecipeHolder<?> add(RecipeHolder<?> holder) {

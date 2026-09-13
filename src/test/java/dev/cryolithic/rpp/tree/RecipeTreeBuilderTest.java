@@ -3,7 +3,10 @@ package dev.cryolithic.rpp.tree;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import appeng.api.stacks.AEItemKey;
@@ -11,7 +14,10 @@ import appeng.api.stacks.AEKey;
 import dev.cryolithic.rpp.recipe.RecipeIndex;
 import dev.cryolithic.rpp.recipe.RecipeIndexFixture;
 import java.util.ArrayList;
+import java.util.BitSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.crafting.Ingredient;
 import org.junit.jupiter.api.Test;
@@ -112,6 +118,81 @@ class RecipeTreeBuilderTest {
         ItemNode aAgain = firstCandidate(dNode);
         assertEquals(TreeNode.State.CYCLE, aAgain.state());
         assertNull(aAgain.recipes());
+    }
+
+    @Test
+    void tagCycleFirstCandidateIsAncestorMarksCycleAndHidesOthers() {
+        RecipeIndexFixture f = new RecipeIndexFixture();
+        Item b = f.item("tgc_b");
+        Item c = f.item("tgc_c");
+        Item a = f.item("tgc_a");
+        var t = f.tag("tgc_t", a, c); // candidates [A, C], A first
+        f.shapeless("tgc_b_to_a", a, 1, Ingredient.of(b));
+        f.shapeless("tgc_b_from_t", b, 1, Ingredient.of(t));
+        RecipeTreeBuilder builder = builder(f.buildIndex());
+
+        ItemNode root = builder.buildRoot(AEItemKey.of(a), 8);
+
+        ItemNode bNode = firstCandidate(root);
+        IngredientNode ingredient = bNode.recipes().get(0).ingredients().get(0);
+        // the first candidate (the ancestor) is CYCLE, selectable as a raw input
+        assertEquals(TreeNode.State.CYCLE, ingredient.candidates().get(0).state());
+        assertEquals(a, itemOf(ingredient.candidates().get(0).goal()));
+        // the non-ancestor candidate C is not offered
+        assertEquals(1, ingredient.candidates().size(),
+                "a tag whose first candidate is an ancestor offers no other candidates");
+        // the recipe is still offered; the plan ends in a raw input of the ancestor
+        assertTrue(bNode.selected().get(0));
+        List<PlanRow> plan = TreeSelection.planRows(root);
+        assertEquals(3, plan.size());
+        assertTrue(plan.get(2).rawInput());
+        assertEquals(a, itemOf(plan.get(2).output()));
+    }
+
+    @Test
+    void tagCycleFirstCandidateNotAncestorOffersAllCandidates() {
+        RecipeIndexFixture f = new RecipeIndexFixture();
+        Item b = f.item("tgn_b");
+        Item c = f.item("tgn_c");
+        Item a = f.item("tgn_a");
+        var t = f.tag("tgn_t", c, a); // candidates [C, A], C first
+        f.shapeless("tgn_b_to_a", a, 1, Ingredient.of(b));
+        f.shapeless("tgn_b_from_t", b, 1, Ingredient.of(t));
+        RecipeTreeBuilder builder = builder(f.buildIndex());
+
+        ItemNode root = builder.buildRoot(AEItemKey.of(a), 8);
+
+        ItemNode bNode = firstCandidate(root);
+        IngredientNode ingredient = bNode.recipes().get(0).ingredients().get(0);
+        // C (first) is offered; A (an ancestor, non-first) is also offered, not CYCLE
+        assertEquals(2, ingredient.candidates().size());
+        assertEquals(c, itemOf(ingredient.candidates().get(0).goal()));
+        assertEquals(a, itemOf(ingredient.candidates().get(1).goal()));
+        assertNotEquals(TreeNode.State.CYCLE, ingredient.candidates().get(1).state(),
+                "AE2 allows the pattern, so the ancestor candidate is not hidden as a cycle");
+        assertNotEquals(TreeNode.State.CYCLE, ingredient.state(),
+                "the ingredient is not marked CYCLE when its first candidate is not an ancestor");
+    }
+
+    @Test
+    void recipeWithFirstCandidateIntermediateAncestorIsRefused() {
+        RecipeIndexFixture f = new RecipeIndexFixture();
+        Item c = f.item("ref_c");
+        Item b = f.item("ref_b");
+        Item a = f.item("ref_a");
+        f.shapeless("ref_b_to_a", a, 1, Ingredient.of(b));
+        f.shapeless("ref_c_to_b", b, 1, Ingredient.of(c));
+        f.shapeless("ref_b_to_c", c, 1, Ingredient.of(b));
+        RecipeTreeBuilder builder = builder(f.buildIndex());
+
+        ItemNode root = builder.buildRoot(AEItemKey.of(a), 8);
+
+        ItemNode bNode = firstCandidate(root);
+        ItemNode cNode = firstCandidate(bNode);
+        // C's only recipe (C from B) is refused: B is an intermediate ancestor,
+        // so AE2 would silently refuse the pattern in this context
+        assertNull(cNode.recipes(), "a recipe whose first input is an intermediate ancestor is refused");
+        assertTrue(cNode.isLeaf());
     }
 
     @Test
@@ -334,6 +415,25 @@ class RecipeTreeBuilderTest {
     }
 
     @Test
+    void requireTrustedRecipesHidesUntrustedRecipesFromTheTree() {
+        RecipeIndexFixture f = new RecipeIndexFixture();
+        Item b = f.item("unth_b");
+        Item a = f.item("unth_a");
+        f.shapeless("unth_craft_b_to_a", a, 1, Ingredient.of(b));
+        f.generic("unth_generic_b_to_a", f.type("rpp_unth_type"), () -> f.stack(a), Ingredient.of(b));
+
+        // Flag on: the untrusted recipe never reaches the tree.
+        ItemNode root = builder(f.buildIndex(Set.of(), true)).buildRoot(AEItemKey.of(a), 1);
+        assertEquals(1, root.recipes().size(), "only the trusted recipe survives the index filter");
+        assertTrue(root.recipes().get(0).recipe().trusted());
+
+        // Flag off: both recipes reach the tree; the untrusted one is
+        // still rejected (separate behavior, unchanged).
+        ItemNode open = builder(f.buildIndex()).buildRoot(AEItemKey.of(a), 1);
+        assertEquals(2, open.recipes().size());
+    }
+
+    @Test
     void forcedChainAutoCollapsesUnexpandedDescendants() {
         RecipeIndexFixture f = new RecipeIndexFixture();
         Item b = f.item("unexp_b");
@@ -400,5 +500,243 @@ class RecipeTreeBuilderTest {
         ItemNode b2Node = root.recipes().get(1).ingredients().get(0).candidates().get(0);
         assertEquals(TreeNode.State.CAPPED, b2Node.state());
         assertNull(b2Node.recipes());
+    }
+
+    @Test
+    void gappedShapedRecipeIsPrimaryNotRejectedAndAutoCollapses() {
+        RecipeIndexFixture f = new RecipeIndexFixture();
+        Item plank = f.item("gap_plank");
+        Item chest = f.item("gap_chest");
+        // chest-like: 8 planks around a blank center slot
+        f.shapedGapped("gap_chest_from_planks", chest, 1, Map.of('#', Ingredient.of(plank)),
+                "###", "# #", "###");
+        RecipeTreeBuilder builder = builder(f.buildIndex());
+
+        ItemNode root = builder.buildRoot(AEItemKey.of(chest), 2);
+
+        RecipeNode recipe = root.recipes().get(0);
+        assertEquals(Tier.PRIMARY, recipe.tier(),
+                "the blank center slot is no source-less input: the sole source is PRIMARY, not REJECTED");
+        assertNull(recipe.rejectionReason());
+        // the blank slot keeps its position: a disabled placeholder with no candidates
+        assertEquals(9, recipe.ingredients().size());
+        assertTrue(recipe.ingredients().get(4).ingredient().isEmpty());
+        assertTrue(recipe.ingredients().get(4).candidates().isEmpty());
+        // the oracle verifies the gapped branch instead of bottoming out UNKNOWN
+        assertEquals(Craftability.CRAFTABLE_UNAMBIGUOUS, root.craftability());
+        // the whole branch is a forced bottleneck: it auto-collapses
+        assertEquals(TreeNode.State.COLLAPSED, root.state());
+        assertTrue(TreeSelection.isCollapsible(root));
+        // plan: the chest pattern (8 non-blank candidates) plus the raw plank input
+        List<PlanRow> plan = TreeSelection.planRows(root);
+        assertEquals(2, plan.size());
+        assertEquals("rpp:gap_chest_from_planks", plan.get(0).recipeId().toString());
+        assertEquals(8, plan.get(0).selectedCandidates().size(), "the blank slot contributes no candidate");
+        assertTrue(plan.get(1).rawInput());
+    }
+
+    @Test
+    void detachedExpansionLeavesLiveGraphUntouchedUntilPublish() {
+        RecipeIndexFixture f = new RecipeIndexFixture();
+        Item d = f.item("det_d");
+        Item c = f.item("det_c");
+        Item b = f.item("det_b");
+        Item a = f.item("det_a");
+        Item e = f.item("det_e");
+        f.shapeless("det_b_to_a", a, 1, Ingredient.of(b));
+        // a second recipe for a keeps the root from being forced, so the
+        // auto-collapse trigger does not materialize b during buildRoot and
+        // b stays UNEXPANDED for the detached expansion under test
+        f.shapeless("det_e_to_a", a, 1, Ingredient.of(e));
+        // e has a source of its own so its input depth ties b's (1); the
+        // recipe-id tie-break then keeps b's recipe first (the PRIMARY)
+        f.shapeless("det_f_to_e", e, 1, Ingredient.of(f.item("det_f")));
+        f.shapeless("det_c_to_b", b, 1, Ingredient.of(c));
+        f.shapeless("det_d_to_b", b, 1, Ingredient.of(d));
+        RecipeTreeBuilder builder = builder(f.buildIndex());
+
+        ItemNode root = builder.buildRoot(AEItemKey.of(a), 1);
+        ItemNode bNode = firstCandidate(root);
+        assertEquals(TreeNode.State.UNEXPANDED, bNode.state());
+        List<RecipeNode> rootRecipes = root.recipes();
+        int nodesBefore = builder.totalNodes();
+
+        RecipeTreeBuilder.Expansion expansion = builder.expandDetached(bNode);
+
+        // the live graph is untouched: the node is still unexpanded, and the
+        // build did not count the twin against the session node cap
+        assertEquals(TreeNode.State.UNEXPANDED, bNode.state());
+        assertNull(bNode.recipes());
+        assertFalse(bNode.isForced());
+        assertFalse(bNode.isLeaf());
+        assertTrue(bNode.selected().isEmpty());
+        assertEquals(nodesBefore + 6, builder.totalNodes(),
+                "two recipes, two ingredients, two candidates; the twin is a scaffold, not a node");
+
+        // the twin holds the built subtree, parent-linked to the live node
+        ItemNode twin = expansion.twin();
+        assertNotNull(twin.recipes());
+        assertEquals(TreeNode.State.EXPANDED, twin.state());
+        assertEquals(2, twin.recipes().size());
+        for (RecipeNode recipe : twin.recipes()) {
+            assertSame(bNode, recipe.parent(), "the new child is parent-linked to the live node");
+        }
+        BitSet twinSelection = (BitSet) twin.selected().clone();
+
+        // publish: the live node keeps its identity and receives the subtree
+        builder.publish(expansion);
+        assertSame(bNode, expansion.node(), "the live node keeps its identity");
+        assertNotNull(bNode.recipes());
+        assertEquals(TreeNode.State.EXPANDED, bNode.state());
+        assertEquals(2, bNode.recipes().size());
+        for (RecipeNode recipe : bNode.recipes()) {
+            assertSame(bNode, recipe.parent());
+        }
+        assertEquals(twinSelection, bNode.selected(), "the built default selection survives the publish");
+        // the rest of the live graph is unchanged
+        assertEquals(TreeNode.State.EXPANDED, root.state());
+        assertSame(rootRecipes, root.recipes());
+        assertTrue(root.selected().get(0), "the root's pre-existing selection survives the publish");
+    }
+
+    @Test
+    void detachedExpansionAutoCollapsesForcedBottleneck() {
+        RecipeIndexFixture f = new RecipeIndexFixture();
+        Item c = f.item("detac_c");
+        Item b = f.item("detac_b");
+        Item a = f.item("detac_a");
+        f.shapeless("detac_b_to_a", a, 1, Ingredient.of(b));
+        f.shapeless("detac_c_to_b", b, 1, Ingredient.of(c));
+        RecipeTreeBuilder builder = builder(f.buildIndex());
+
+        ItemNode root = builder.buildRoot(AEItemKey.of(a), 0);
+        assertEquals(TreeNode.State.UNEXPANDED, root.state());
+
+        RecipeTreeBuilder.Expansion expansion = builder.expandDetached(root);
+        assertEquals(TreeNode.State.COLLAPSED, expansion.twin().state(),
+                "the forced bottleneck auto-collapses in the detached build");
+
+        builder.publish(expansion);
+        assertEquals(TreeNode.State.COLLAPSED, root.state());
+        assertNotNull(root.recipes());
+        ItemNode bNode = firstCandidate(root);
+        assertEquals(TreeNode.State.COLLAPSED, bNode.state(),
+                "the unexpanded forced descendant is auto-expanded and collapsed");
+        assertNotNull(bNode.recipes());
+        assertEquals(3, TreeSelection.planRows(root).size(),
+                "a's recipe, b's recipe, and raw input c");
+    }
+
+    @Test
+    void expandDetachedRefusesNonUnexpandedNodes() {
+        RecipeIndexFixture f = new RecipeIndexFixture();
+        Item c = f.item("refu_c");
+        Item b = f.item("refu_b");
+        Item b2 = f.item("refu_b2");
+        Item a = f.item("refu_a");
+        f.shapeless("refu_c_to_b", b, 1, Ingredient.of(c));
+        f.shapeless("refu_b_to_a", a, 1, Ingredient.of(b));
+        f.shapeless("refu_b2_to_a", a, 1, Ingredient.of(b2));
+        RecipeTreeBuilder builder = builder(f.buildIndex());
+
+        ItemNode root = builder.buildRoot(AEItemKey.of(a), 1);
+        assertThrows(IllegalArgumentException.class, () -> builder.expandDetached(root),
+                "an already-expanded node cannot be detached-expanded");
+        final ItemNode[] holder = new ItemNode[1];
+        for (RecipeNode recipe : root.recipes()) {
+            ItemNode candidate = recipe.ingredients().get(0).candidates().get(0);
+            if (itemOf(candidate.goal()) == b) {
+                holder[0] = candidate;
+                break;
+            }
+        }
+        assertNotNull(holder[0]);
+        ItemNode bNode = holder[0];
+        builder.publish(builder.expandDetached(bNode));
+        assertThrows(IllegalArgumentException.class, () -> builder.expandDetached(bNode),
+                "a published node is expanded, so a second detached expansion is refused");
+    }
+
+    @Test
+    void forcedNodeWithAmbiguousCraftableGoalAutoCollapses() {
+        RecipeIndexFixture f = new RecipeIndexFixture();
+        Item d = f.item("ambc_d");
+        Item c = f.item("ambc_c");
+        Item b = f.item("ambc_b");
+        Item a = f.item("ambc_a");
+        var t = f.tag("ambc_t", c, d);
+        f.shapeless("ambc_t_to_b", b, 1, Ingredient.of(t));
+        f.shapeless("ambc_b_to_a", a, 1, Ingredient.of(b));
+        RecipeTreeBuilder builder = builder(f.buildIndex());
+
+        ItemNode root = builder.buildRoot(AEItemKey.of(a), 1);
+
+        assertTrue(root.isForced(), "the node itself has one live recipe");
+        assertEquals(Craftability.CRAFTABLE_AMBIGUOUS, root.craftability(),
+                "the tag input below b makes the goal ambiguous-but-craftable");
+        // The whole CRAFTABLE family triggers auto-collapse, not just the
+        // unambiguous half: the subtree is materialized and collapsed into a
+        // summary row even though the oracle sees several paths.
+        assertEquals(TreeNode.State.COLLAPSED, root.state());
+        ItemNode bNode = firstCandidate(root);
+        assertEquals(TreeNode.State.COLLAPSED, bNode.state(),
+                "the forced descendant with a tag input is auto-expanded and collapsed");
+        assertNotNull(bNode.recipes());
+        assertTrue(TreeSelection.isCollapsible(root));
+        List<PlanRow> plan = TreeSelection.planRows(root);
+        assertEquals(3, plan.size(), "a's pattern, b's pattern, and the raw tag input");
+        assertEquals("rpp:ambc_b_to_a", plan.get(0).recipeId().toString());
+        assertEquals("rpp:ambc_t_to_b", plan.get(1).recipeId().toString());
+        assertTrue(plan.get(2).rawInput());
+        assertEquals(c, itemOf(plan.get(2).output()));
+    }
+
+    @Test
+    void uncraftableGoalStaysExpanded() {
+        RecipeIndexFixture f = new RecipeIndexFixture();
+        Item b = f.item("uncr_b");
+        Item a = f.item("uncr_a");
+        // the goal's only source is untrusted: no usable recipe, so the goal
+        // is uncraftable in the tree even though the oracle (which sees the
+        // raw index) calls it craftable
+        f.generic("uncr_b_to_a", f.type("rpp_uncr_type"), () -> f.stack(a), Ingredient.of(b));
+        RecipeTreeBuilder builder = builder(f.buildIndex());
+
+        ItemNode root = builder.buildRoot(AEItemKey.of(a), 1);
+
+        assertFalse(root.isForced(), "an untrusted recipe is not a live candidate to auto-select");
+        assertEquals(Craftability.CRAFTABLE_UNAMBIGUOUS, root.craftability(),
+                "the oracle sees the raw index, where the recipe looks craftable");
+        // A node without a live path is never auto-collapsed: it stays
+        // expanded so the user can see why the goal has no usable source.
+        assertEquals(TreeNode.State.EXPANDED, root.state());
+        assertNotNull(root.recipes());
+        assertEquals(Tier.REJECTED, root.recipes().get(0).tier());
+    }
+
+    @Test
+    void forcedNodeWithUnknownGoalStaysExpandable() {
+        RecipeIndexFixture f = new RecipeIndexFixture();
+        Item d = f.item("unk_d");
+        Item c = f.item("unk_c");
+        Item b = f.item("unk_b");
+        Item a = f.item("unk_a");
+        f.shapeless("unk_b_to_a", a, 1, Ingredient.of(b));
+        f.shapeless("unk_c_to_b", b, 1, Ingredient.of(c));
+        f.shapeless("unk_d_to_c", c, 1, Ingredient.of(d));
+        RecipeTreeBuilder builder = new RecipeTreeBuilder(f.buildIndex(),
+                new TreeLimits(2, 6, 8, 4000, 100_000), NO_TAGS);
+
+        ItemNode root = builder.buildRoot(AEItemKey.of(a), 8);
+
+        ItemNode bNode = firstCandidate(root);
+        assertTrue(bNode.isForced(), "b has one live recipe");
+        assertEquals(Craftability.UNKNOWN, bNode.craftability(),
+                "the depth budget is exhausted before b's branch bottoms out");
+        // An UNKNOWN verdict never auto-collapses: the node stays expanded so
+        // the user can see where the budget runs out.
+        assertEquals(TreeNode.State.EXPANDED, bNode.state());
+        ItemNode cNode = firstCandidate(bNode);
+        assertEquals(TreeNode.State.CAPPED, cNode.state(), "the budget exhaustion is visible");
     }
 }

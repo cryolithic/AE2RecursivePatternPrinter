@@ -7,10 +7,16 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import appeng.api.stacks.AEItemKey;
+import appeng.api.stacks.GenericStack;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import net.minecraft.core.HolderLookup;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.crafting.Ingredient;
+import net.minecraft.world.item.crafting.RecipeHolder;
 import net.minecraft.world.item.crafting.RecipeType;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -164,5 +170,131 @@ class RecipeIndexTest {
 
         // Nothing blacklisted: both recipes indexed.
         assertEquals(2, fixture.buildIndex().recipeCount());
+    }
+
+    @Test
+    void requireTrustedRecipesHidesUntrustedRecipes() {
+        Item ingot = fixture.item("trust_ingot");
+        Item nugget = fixture.item("trust_nugget");
+        fixture.shaped("trust_craft", ingot, 1, Map.of('X', Ingredient.of(ingot)), "X");
+        fixture.generic("trust_generic", fixture.type("trust_generic"), () -> fixture.stack(nugget),
+                Ingredient.of(ingot));
+
+        // Flag off: both recipes are indexed, untrusted included.
+        RecipeIndex open = fixture.buildIndex(Set.of(), false);
+        assertEquals(2, open.recipeCount());
+        assertEquals(1, open.recipesFor(AEItemKey.of(ingot)).size());
+        assertEquals(1, open.recipesFor(AEItemKey.of(nugget)).size());
+
+        // Flag on: the generic (untrusted) recipe never enters the index;
+        // the trusted crafting recipe is unaffected.
+        RecipeIndex strict = fixture.buildIndex(Set.of(), true);
+        assertEquals(1, strict.recipeCount());
+        assertEquals(1, strict.recipesFor(AEItemKey.of(ingot)).size());
+        assertEquals("rpp:trust_craft", strict.recipesFor(AEItemKey.of(ingot)).get(0).id().toString());
+        assertEquals(List.of(), strict.recipesFor(AEItemKey.of(nugget)));
+    }
+
+    @Test
+    void adapterThrowingOnOneRecipeIsIsolatedAndCounted() {
+        Item ingot = fixture.item("adapter_ingot");
+        RecipeType<?> type = fixture.type("adapter_type");
+        fixture.generic("adapter_good1", type, () -> fixture.stack(ingot), Ingredient.of(ingot));
+        fixture.generic("adapter_bad", type, () -> fixture.stack(ingot), Ingredient.of(ingot));
+        fixture.generic("adapter_good2", type, () -> fixture.stack(ingot), Ingredient.of(ingot));
+
+        try {
+            RecipeAdapters.register(new RecipeAdapter() {
+                @Override
+                public RecipeType<?> type() {
+                    return type;
+                }
+
+                @Override
+                public RecipeView view(RecipeHolder<?> holder, HolderLookup.Provider registries) {
+                    if (holder.id().equals(ResourceLocation.fromNamespaceAndPath("rpp", "adapter_bad"))) {
+                        throw new IllegalStateException("adapter boom");
+                    }
+                    return new RecipeView(holder.id(), type, List.of(),
+                            List.of(new GenericStack(AEItemKey.of(ingot), 1)), 0, 0, true);
+                }
+            });
+
+            RecipeIndexFixture.resetConsole();
+            RecipeIndex index = fixture.buildIndex();
+
+            // The build completes: the throwing recipe is excluded and the
+            // other two are indexed via the adapter.
+            assertEquals(2, index.recipeCount());
+            List<String> ids = index.recipesFor(AEItemKey.of(ingot)).stream()
+                    .map(view -> view.id().toString())
+                    .sorted()
+                    .toList();
+            assertEquals(List.of("rpp:adapter_good1", "rpp:adapter_good2"), ids);
+
+            List<String> summaryLines = RecipeIndexFixture.consoleLines().stream()
+                    .filter(line -> line.contains("rpp recipe index:"))
+                    .toList();
+            assertEquals(1, summaryLines.size());
+            assertTrue(summaryLines.get(0).contains("2 recipes indexed"), summaryLines.get(0));
+            assertTrue(summaryLines.get(0).contains("1 extraction failures"), summaryLines.get(0));
+        } finally {
+            RecipeAdapters.unregister(type);
+        }
+    }
+
+    @Test
+    void adapterDisabledAfterRepeatedThrowsFallsBackToVanillaExtraction() {
+        Item ingot = fixture.item("guard_ingot");
+        RecipeType<?> type = fixture.type("guard_type");
+        for (int i = 1; i <= 12; i++) {
+            fixture.generic("guard_" + i, type, () -> fixture.stack(ingot), Ingredient.of(ingot));
+        }
+
+        try {
+            List<String> calls = new ArrayList<>();
+            RecipeAdapters.register(new RecipeAdapter() {
+                @Override
+                public RecipeType<?> type() {
+                    return type;
+                }
+
+                @Override
+                public RecipeView view(RecipeHolder<?> holder, HolderLookup.Provider registries) {
+                    calls.add(holder.id().toString());
+                    throw new IllegalStateException("adapter boom");
+                }
+            });
+
+            RecipeIndexFixture.resetConsole();
+            RecipeIndex index = fixture.buildIndex();
+
+            // The adapter is called exactly 10 times, then disabled; the
+            // remaining two recipes fall back to the generic (untrusted)
+            // path and are still indexed.
+            assertEquals(10, calls.size());
+            assertEquals(2, index.recipeCount());
+            List<String> ids = index.recipesFor(AEItemKey.of(ingot)).stream()
+                    .map(view -> view.id().toString())
+                    .sorted()
+                    .toList();
+            assertEquals(List.of("rpp:guard_11", "rpp:guard_12"), ids);
+
+            List<String> summaryLines = RecipeIndexFixture.consoleLines().stream()
+                    .filter(line -> line.contains("rpp recipe index:"))
+                    .toList();
+            assertEquals(1, summaryLines.size());
+            assertTrue(summaryLines.get(0).contains("2 recipes indexed"), summaryLines.get(0));
+            assertTrue(summaryLines.get(0).contains("10 extraction failures"), summaryLines.get(0));
+
+            // The adapter is disabled exactly once, with its type logged.
+            List<String> disableLines = RecipeIndexFixture.consoleLines().stream()
+                    .filter(line -> line.contains("rpp:guard_type"))
+                    .toList();
+            assertEquals(1, disableLines.size());
+            assertTrue(disableLines.get(0).contains("disabling"), disableLines.get(0));
+        } finally {
+            RecipeAdapters.unregister(type);
+        }
     }
 }
