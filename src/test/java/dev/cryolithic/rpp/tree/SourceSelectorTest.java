@@ -697,6 +697,9 @@ class SourceSelectorTest {
                 Ingredient.of(new ItemStack(b1, 3)),
                 Ingredient.of(new ItemStack(b2, 3)),
                 Ingredient.of(new ItemStack(b3, 3)));
+        // One tag slot (three alternatives, one item consumed), three out:
+        // the slot consumes one item, so this is a higher per-item yield
+        f.shapeless("yield_r5", goal, 3, Ingredient.of(b1, b2, b3));
 
         SourceSelector.SelectionConfig config = new SourceSelector.SelectionConfig(
                 0.95, true, 3, 1, true, List.of("minecraft", "ae2"));
@@ -710,5 +713,7 @@ class SourceSelectorTest {
         assertEquals("conservative: not a promoted path", recipeById(root, "rpp:yield_r2").rejectionReason());
         assertEquals(Tier.REJECTED, recipeById(root, "rpp:yield_r4").tier(),
                 "nine out of nine items is not above one out of one, spread over three slots");
+        assertEquals(Tier.ALTERNATE, recipeById(root, "rpp:yield_r5").tier(),
+                "a tag slot consumes one item, so three out of one is a higher per-item yield");
     }
 }

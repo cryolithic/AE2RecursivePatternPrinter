@@ -366,12 +366,12 @@ public final class SourceSelector {
             if (input.isEmpty()) {
                 continue; // blank grid slots consume nothing; they are not inputs
             }
-            // Per item, not per slot: a count-9 slot consumes nine items, and
-            // a tag slot offers one of each member. The vanilla ingredient
-            // carries the slot's stacks with their counts.
-            for (ItemStack stack : input.ingredient().getItems()) {
-                items += stack.getCount();
-            }
+            // Per item, not per slot, and per the slot's consumption, not the
+            // sum of its alternatives: a count-9 slot consumes nine items, and
+            // a tag slot with eleven count-1 members consumes one (the
+            // candidates are alternatives, not quantities — DESIGN.md §7.1).
+            // slotCount is resolved on the main thread, so no getItems() here.
+            items += Math.max(1L, input.slotCount());
         }
         return (double) output / Math.max(1L, items);
     }

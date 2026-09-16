@@ -13,7 +13,6 @@ import java.util.Map;
 import java.util.Objects;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.item.Item;
-import net.minecraft.world.item.ItemStack;
 import org.jetbrains.annotations.Nullable;
 
 /**
@@ -114,19 +113,25 @@ public final class ReversalDetector {
                     extras = true;
                     continue;
                 }
-                // Goal units are counted in item counts, not slots: a
-                // count-9 goal ingredient consumes nine goal units, and any
-                // non-goal stack in the slot is an extra input.
-                long slotGoalUnits = 0;
+                // Goal units are counted in the slot's consumption, not the
+                // sum of its alternatives: a count-9 goal ingredient consumes
+                // nine goal units, and a tag slot with several goal members
+                // consumes one (the candidates are alternatives, not
+                // quantities). Any non-goal member makes the slot an extra
+                // input. candidates + slotCount are main-thread-resolved, so
+                // no getItems() here.
+                boolean slotHasGoal = false;
                 boolean slotHasOther = false;
-                for (ItemStack stack : fin.ingredient().getItems()) {
-                    if (stack.getItem() == goalItem) {
-                        slotGoalUnits += stack.getCount();
+                for (Item member : fin.candidates()) {
+                    if (member == goalItem) {
+                        slotHasGoal = true;
                     } else {
                         slotHasOther = true;
                     }
                 }
-                goalUnits += slotGoalUnits;
+                if (slotHasGoal) {
+                    goalUnits += Math.max(1L, fin.slotCount());
+                }
                 if (slotHasOther) {
                     extras = true;
                 }
