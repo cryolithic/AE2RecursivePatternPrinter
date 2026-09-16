@@ -122,6 +122,7 @@ public final class RecipeTreeBuilder {
         live.setForced(twin.isForced());
         live.setRawInput(twin.isRawInput());
         live.setLeaf(twin.isLeaf());
+        live.setFilteredCount(twin.filteredCount());
         live.setState(twin.state());
     }
 

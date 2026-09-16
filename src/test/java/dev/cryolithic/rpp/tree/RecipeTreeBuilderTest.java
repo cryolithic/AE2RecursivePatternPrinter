@@ -600,6 +600,40 @@ class RecipeTreeBuilderTest {
     }
 
     @Test
+    void detachedExpansionPublishesFilteredCountForMoreMarker() {
+        // Issue #81: publish() must copy filteredCount, so the "+K more"
+        // marker is computed for click-expanded nodes, not just the initial
+        // buildRoot (in-place) path.
+        RecipeIndexFixture f = new RecipeIndexFixture();
+        Item a = f.item("more_a");
+        Item b = f.item("more_b");
+        Item e = f.item("more_e");
+        // a has two sources so the root is not forced; b and e are candidates
+        f.shapeless("more_b_to_a", a, 1, Ingredient.of(b));
+        f.shapeless("more_e_to_a", a, 1, Ingredient.of(e));
+        f.shapeless("more_x_to_e", e, 1, Ingredient.of(f.item("more_x")));
+        // b has ten sources; expanding it caps to maxRecipesPerItem (6) and
+        // records filteredCount = 10 for the "+4 more" marker
+        for (int i = 0; i < 10; i++) {
+            f.shapeless("more_b_src" + i, b, 1, Ingredient.of(f.item("more_b_in" + i)));
+        }
+        RecipeTreeBuilder builder = builder(f.buildIndex());
+
+        ItemNode root = builder.buildRoot(AEItemKey.of(a), 1);
+        ItemNode bNode = firstCandidate(root);
+        assertEquals(TreeNode.State.UNEXPANDED, bNode.state());
+
+        RecipeTreeBuilder.Expansion expansion = builder.expandDetached(bNode);
+        builder.publish(expansion);
+
+        // the live node carries the filtered count, so the marker is computed
+        assertEquals(10, bNode.filteredCount());
+        assertEquals(6, bNode.recipes().size(), "capped to maxRecipesPerItem");
+        assertEquals(10 - TreeLimits.DEFAULTS.maxRecipesPerItem(), builder.moreCount(bNode),
+                "the +K more marker is available after a detached publish");
+    }
+
+    @Test
     void detachedExpansionAutoCollapsesForcedBottleneck() {
         RecipeIndexFixture f = new RecipeIndexFixture();
         Item c = f.item("detac_c");
