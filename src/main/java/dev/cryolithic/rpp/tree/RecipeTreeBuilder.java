@@ -45,6 +45,15 @@ public final class RecipeTreeBuilder {
     private final SourceSelector selector;
     private int nextId;
     private int totalNodes;
+    /**
+     * The node budget for the current user action (DESIGN.md §8.3): one
+     * initial build or one click expansion. Shared across every
+     * {@code expandItem} the action triggers (including auto-collapse
+     * cascades), so a single action cannot exceed {@code maxNodesPerExpansion}
+     * in aggregate. Null outside an action.
+     */
+    @Nullable
+    private ExpansionBudget actionBudget;
 
     /**
      * @param index  the immutable recipe snapshot
@@ -78,7 +87,12 @@ public final class RecipeTreeBuilder {
      */
     public ItemNode buildRoot(AEKey goal, int initialDepth) {
         ItemNode root = newItemNode(goal, null);
-        expandInitial(root, 0, initialDepth);
+        actionBudget = new ExpansionBudget(limits.maxNodesPerExpansion());
+        try {
+            expandInitial(root, 0, initialDepth);
+        } finally {
+            actionBudget = null;
+        }
         return root;
     }
 
@@ -101,7 +115,12 @@ public final class RecipeTreeBuilder {
         }
         ItemNode twin = new ItemNode(node.goal(), nextId++, node.parent());
         twin.setCraftability(node.craftability());
-        expandItem(twin, node);
+        actionBudget = new ExpansionBudget(limits.maxNodesPerExpansion());
+        try {
+            expandItem(twin, node);
+        } finally {
+            actionBudget = null;
+        }
         return new Expansion(node, twin);
     }
 
@@ -230,8 +249,14 @@ public final class RecipeTreeBuilder {
                 nodeCount += Math.min(input.candidates().size(), limits.maxCandidatesPerIngredient());
             }
         }
-        if (nodeCount > limits.maxNodesPerExpansion()
-                || totalNodes + nodeCount > limits.maxTotalNodes()) {
+        // Per-action budget (DESIGN.md §8.3): one initial build or one click
+        // may not exceed maxNodesPerExpansion in aggregate, even when
+        // auto-collapse cascades many expansions. The session cap remains a
+        // backstop across actions.
+        boolean overBudget = actionBudget != null
+                ? nodeCount > actionBudget.remaining
+                : nodeCount > limits.maxNodesPerExpansion();
+        if (overBudget || totalNodes + nodeCount > limits.maxTotalNodes()) {
             node.setState(State.CAPPED);
             return;
         }
@@ -239,6 +264,9 @@ public final class RecipeTreeBuilder {
         List<RecipeNode> recipes = new ArrayList<>(kept.size());
         for (RecipeView view : kept) {
             recipes.add(newRecipeNode(attachTo, view));
+        }
+        if (actionBudget != null) {
+            actionBudget.remaining -= nodeCount;
         }
         node.setRecipes(recipes);
         selector.assign(node);
@@ -496,6 +524,15 @@ public final class RecipeTreeBuilder {
         /** The detached twin holding the built subtree, until published. */
         public ItemNode twin() {
             return twin;
+        }
+    }
+
+    /** A single mutable node budget for one user action (DESIGN.md §8.3). */
+    private static final class ExpansionBudget {
+        int remaining;
+
+        ExpansionBudget(int remaining) {
+            this.remaining = remaining;
         }
     }
 }

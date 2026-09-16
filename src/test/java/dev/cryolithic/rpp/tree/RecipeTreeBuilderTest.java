@@ -315,6 +315,41 @@ class RecipeTreeBuilderTest {
     }
 
     @Test
+    void perActionBudgetCapsAggregateNodesAcrossCascadedExpansions() {
+        // Issue #73: maxNodesPerExpansion is a per-ACTION budget, not a
+        // per-node cap. One initial build may not exceed it in aggregate,
+        // even when multi-level expansion cascades many expandItem calls —
+        // each of which is individually under the cap.
+        RecipeIndexFixture f = new RecipeIndexFixture();
+        Item rootItem = f.item("pb_root");
+        // root: 4 recipes, each from a distinct mid item -> 12 nodes per expansion
+        Item[] mids = new Item[4];
+        for (int r = 0; r < 4; r++) {
+            mids[r] = f.item("pb_mid" + r);
+            f.shapeless("pb_root_r" + r, rootItem, 1, Ingredient.of(mids[r]));
+        }
+        // each mid: 4 recipes, each from a distinct leaf -> 12 nodes per expansion
+        for (int m = 0; m < 4; m++) {
+            for (int r = 0; r < 4; r++) {
+                f.shapeless("pb_mid" + m + "_r" + r, mids[m], 1,
+                        Ingredient.of(f.item("pb_leaf" + m + "_" + r)));
+            }
+        }
+        // maxNodesPerExpansion=30: the per-node cap would allow all four mid
+        // expansions (12 each = 60 total); the per-action budget binds first.
+        RecipeTreeBuilder builder = new RecipeTreeBuilder(f.buildIndex(),
+                new TreeLimits(8, 6, 8, 30, 100_000), NO_TAGS);
+
+        ItemNode root = builder.buildRoot(AEItemKey.of(rootItem), 2);
+
+        // the aggregate is bounded by the per-action budget, not the per-node cap
+        assertTrue(builder.totalNodes() <= 30,
+                "one action may not exceed maxNodesPerExpansion in aggregate: " + builder.totalNodes());
+        assertTrue(builder.totalNodes() < 60,
+                "the per-action budget must bind before the per-node cap would allow every cascaded expansion");
+    }
+
+    @Test
     void orderingIsStableAcrossTwoBuilds() {
         RecipeIndexFixture f = new RecipeIndexFixture();
         Item a = f.item("ord_a");
