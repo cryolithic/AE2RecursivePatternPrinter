@@ -96,7 +96,7 @@ public final class RecipeIndexBootstrap {
         try {
             Collection<? extends String> blacklistedTypes = RppConfig.blacklistedRecipeTypes();
             boolean requireTrusted = RppConfig.requireTrustedRecipes();
-            Map<ResourceLocation, List<List<Item>>> ingredientItems =
+            Map<ResourceLocation, List<RecipeIndex.SlotItems>> ingredientItems =
                     RecipeIndex.resolveIngredientItems(recipeManager, blacklistedTypes);
             RecipeIndexHolder.rebuild(recipeManager, registries, blacklistedTypes, ingredientItems,
                     requireTrusted);

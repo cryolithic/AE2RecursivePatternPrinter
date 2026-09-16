@@ -55,6 +55,15 @@ public record RecipeIndex(Map<Item, List<RecipeView>> byOutput, int recipeCount)
     private static final int MAX_ADAPTER_THROWS = 10;
 
     /**
+     * One resolved ingredient slot: the candidate items (tag members or the
+     * single concrete item) and the slot's consumption (max stack count among
+     * the members). Resolved on the main thread so the background build never
+     * calls {@code Ingredient.getItems()} (DESIGN.md §9).
+     */
+    public record SlotItems(List<Item> items, int slotCount) {
+    }
+
+    /**
      * Convenience for callers on the main thread (the unit tests): resolves
      * the ingredient data on the calling thread and runs the build with the
      * trust filter off. Production callers must use
@@ -94,7 +103,7 @@ public record RecipeIndex(Map<Item, List<RecipeView>> byOutput, int recipeCount)
      */
     public static RecipeIndex build(RecipeManager rm, HolderLookup.Provider registries,
             Collection<? extends String> blacklistedTypes,
-            Map<ResourceLocation, List<List<Item>>> ingredientItems,
+            Map<ResourceLocation, List<SlotItems>> ingredientItems,
             boolean requireTrusted) {
         Map<Item, List<RecipeView>> byOutput = new HashMap<>();
         Map<RecipeType<?>, Integer> adapterThrows = new HashMap<>();
@@ -161,23 +170,25 @@ public record RecipeIndex(Map<Item, List<RecipeView>> byOutput, int recipeCount)
      *         third-party ingredient) is absent from the map and is counted
      *         as an extraction failure by the build
      */
-    public static Map<ResourceLocation, List<List<Item>>> resolveIngredientItems(
+    public static Map<ResourceLocation, List<SlotItems>> resolveIngredientItems(
             RecipeManager rm, Collection<? extends String> blacklistedTypes) {
-        Map<ResourceLocation, List<List<Item>>> resolved = new HashMap<>();
+        Map<ResourceLocation, List<SlotItems>> resolved = new HashMap<>();
         for (RecipeHolder<?> holder : rm.getRecipes()) {
             if (isBlacklisted(holder.value().getType(), blacklistedTypes)) {
                 continue;
             }
             try {
                 List<Ingredient> ingredients = holder.value().getIngredients();
-                List<List<Item>> slots = new ArrayList<>(ingredients.size());
+                List<SlotItems> slots = new ArrayList<>(ingredients.size());
                 for (Ingredient ingredient : ingredients) {
                     ItemStack[] stacks = ingredient.getItems();
                     List<Item> items = new ArrayList<>(stacks.length);
+                    int slotCount = 0;
                     for (ItemStack stack : stacks) {
                         items.add(stack.getItem());
+                        slotCount = Math.max(slotCount, stack.getCount());
                     }
-                    slots.add(List.copyOf(items));
+                    slots.add(new SlotItems(List.copyOf(items), ingredient.isEmpty() ? 0 : Math.max(1, slotCount)));
                 }
                 resolved.put(holder.id(), List.copyOf(slots));
             } catch (Exception e) {
@@ -221,7 +232,7 @@ public record RecipeIndex(Map<Item, List<RecipeView>> byOutput, int recipeCount)
      * and never aborts the build (DESIGN.md §6.3).
      */
     private static RecipeView extract(RecipeHolder<?> holder, HolderLookup.Provider registries,
-            Map<ResourceLocation, List<List<Item>>> ingredientItems,
+            Map<ResourceLocation, List<SlotItems>> ingredientItems,
             Map<RecipeType<?>, Integer> adapterThrows) {
         Recipe<?> recipe = holder.value();
         ResourceLocation id = holder.id();
@@ -249,7 +260,7 @@ public record RecipeIndex(Map<Item, List<RecipeView>> byOutput, int recipeCount)
             }
         }
 
-        List<List<Item>> resolved = ingredientItems.get(id);
+        List<SlotItems> resolved = ingredientItems.get(id);
         if (resolved == null) {
             // The main-thread pass could not resolve this recipe's
             // ingredients; count it as an extraction failure.
@@ -290,10 +301,11 @@ public record RecipeIndex(Map<Item, List<RecipeView>> byOutput, int recipeCount)
     }
 
     private static List<IngredientView> toIngredientViews(List<Ingredient> ingredients,
-            List<List<Item>> resolvedItems) {
+            List<SlotItems> resolvedItems) {
         List<IngredientView> views = new ArrayList<>(ingredients.size());
         for (int i = 0; i < ingredients.size(); i++) {
-            views.add(new IngredientView(ingredients.get(i), resolvedItems.get(i), tagId(ingredients.get(i))));
+            SlotItems slot = resolvedItems.get(i);
+            views.add(new IngredientView(ingredients.get(i), slot.items(), tagId(ingredients.get(i)), slot.slotCount()));
         }
         return List.copyOf(views);
     }

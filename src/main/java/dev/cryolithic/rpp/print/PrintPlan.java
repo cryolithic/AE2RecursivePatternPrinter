@@ -376,8 +376,15 @@ public final class PrintPlan {
             return 3;
         }
         if (recipe instanceof CraftingRecipe) {
-            int slots = view.gridWidth() > 0 ? view.gridWidth() * view.gridHeight() : view.inputs().size();
-            return slots <= 9 ? 0 : 1;
+            // A shaped recipe fits a 3x3 crafting grid only if its
+            // dimensions are at most 3x3 — measuring area lets a 4x2
+            // (area 8) through and collides in the stride mapping.
+            // Shapeless recipes have no grid (width 0) and fit if they
+            // carry at most nine ingredients.
+            int w = view.gridWidth();
+            int h = view.gridHeight();
+            boolean fits = (w == 0 && view.inputs().size() <= 9) || (w <= 3 && h <= 3);
+            return fits ? 0 : 1;
         }
         return 1;
     }

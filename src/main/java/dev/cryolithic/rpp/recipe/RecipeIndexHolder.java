@@ -58,7 +58,7 @@ public final class RecipeIndexHolder {
      */
     public static void rebuild(RecipeManager recipeManager, HolderLookup.Provider registries,
             Collection<? extends String> blacklistedTypes,
-            Map<ResourceLocation, List<List<Item>>> ingredientItems,
+            Map<ResourceLocation, List<RecipeIndex.SlotItems>> ingredientItems,
             boolean requireTrusted) {
         long generation = GENERATION.incrementAndGet();
         EXECUTOR.submit(() -> {
