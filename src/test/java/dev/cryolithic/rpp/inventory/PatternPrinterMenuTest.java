@@ -4,10 +4,14 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import appeng.api.ids.AEItemIds;
 import dev.cryolithic.rpp.recipe.RecipeIndexFixture;
+import net.minecraft.core.Registry;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.flag.FeatureFlagSet;
 import net.minecraft.world.inventory.MenuType;
+import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -30,6 +34,24 @@ class PatternPrinterMenuTest {
     static void setUp() {
         RecipeIndexFixture.boot();
         fixture = new RecipeIndexFixture();
+        registerBlankPatternItem();
+    }
+
+    /**
+     * Registers a plain item under the AE2 blank-pattern id so that
+     * {@code PatternPrinterInventory.isBlankPattern} (which looks the item up
+     * by id) passes in the bare JVM, where AE2's own item is never registered.
+     * Idempotent.
+     */
+    private static void registerBlankPatternItem() {
+        if (!BuiltInRegistries.ITEM.containsKey(AEItemIds.BLANK_PATTERN)) {
+            Registry.register(BuiltInRegistries.ITEM, AEItemIds.BLANK_PATTERN, new Item(new Item.Properties()));
+        }
+    }
+
+    /** A stack of the (test-registered) AE2 blank pattern. */
+    private static ItemStack blankPattern(int count) {
+        return new ItemStack(BuiltInRegistries.ITEM.get(AEItemIds.BLANK_PATTERN), count);
     }
     /**
      * A server-side menu (null block entity) over the given player inventory. The
@@ -108,5 +130,34 @@ class PatternPrinterMenuTest {
         // spin the server thread in doClick), and the item stays put.
         assertSame(ItemStack.EMPTY, moved);
         assertEquals(3, menu.slots.get(PatternPrinterMenu.SLOT_OUTPUT_START).getItem().getCount());
+    }
+
+    /**
+     * Issue #74 (reopened): the player-to-printer direction. A blank pattern in
+     * the top row of the main inventory (menu index {@code SLOT_COUNT} = player
+     * slot 9) must take the main-inventory policy (input + blanks first), landing
+     * in the blanks slot — not the hotbar policy (outputs first), which scattered
+     * it across the output grid.
+     */
+    @Test
+    void shiftClickFromMainInventoryRow1GoesToBlanks() {
+        Inventory playerInventory = new Inventory(null);
+        PatternPrinterMenu menu = menu(playerInventory);
+
+        // Menu index SLOT_COUNT is the first main-inventory slot (player slot 9).
+        playerInventory.setItem(9, blankPattern(5));
+
+        ItemStack moved = menu.quickMoveStack(null, PatternPrinterMenu.SLOT_COUNT);
+
+        assertEquals(5, moved.getCount());
+        // Landed in the blanks slot, not scattered across the outputs.
+        assertEquals(5, menu.slots.get(PatternPrinterMenu.SLOT_BLANKS).getItem().getCount());
+        for (int i = PatternPrinterMenu.SLOT_OUTPUT_START; i < PatternPrinterMenu.SLOT_COUNT; i++) {
+            assertTrue(menu.slots.get(i).getItem().isEmpty(), "output slot " + i + " must stay empty");
+        }
+        // The input slot stays empty (a blank is not an encoded pattern).
+        assertTrue(menu.slots.get(PatternPrinterMenu.SLOT_INPUT).getItem().isEmpty());
+        // The player slot was emptied.
+        assertTrue(playerInventory.getItem(9).isEmpty());
     }
 }

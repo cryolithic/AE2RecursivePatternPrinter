@@ -102,7 +102,7 @@ public class PatternPrinterMenu extends AbstractContainerMenu {
                 // non-empty unchanged return spins the server thread.
                 return ItemStack.EMPTY;
             }
-        } else if (index < SLOT_COUNT + SLOTS_PER_ROW) {
+        } else if (index >= PLAYER_HOTBAR_START) {
             // Hotbar -> printer: outputs, then blanks, then input.
             if (!this.moveItemStackTo(moving, SLOT_OUTPUT_START, SLOT_COUNT, false)
                     && !this.moveItemStackTo(moving, SLOT_BLANKS, SLOT_BLANKS + 1, false)
@@ -167,7 +167,11 @@ public class PatternPrinterMenu extends AbstractContainerMenu {
 
         @Override
         public boolean mayPlace(ItemStack stack) {
-            return !stack.isEmpty();
+            // §10.1: outputs are insert-blocked from outside. Only encoded
+            // patterns belong here (the print job fills them server-side);
+            // this keeps the output grid from becoming a dumping ground for
+            // misrouted shift-clicks.
+            return !stack.isEmpty() && PatternDetailsHelper.isEncodedPattern(stack);
         }
     }
 }
