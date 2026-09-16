@@ -330,9 +330,9 @@ class SourceSelectorTest {
         f.shapeless("rm_craft", g, 1, Ingredient.of(b));
 
         RecipeIndex index = f.buildIndex();
-        // the destination is the registry path: stable across JVM runs,
-        // never an identity hash
-        assertEquals(Destination.machine("enriching"),
+        // the destination is the full registry id (namespace:path): stable
+        // across JVM runs, never an identity hash, and distinct per mod
+        assertEquals(Destination.machine("modb:enriching"),
                 SourceSelector.destination(viewFor(index, g, "rm_mod")));
 
         ItemNode root = builder(index).buildRoot(AEItemKey.of(g), 2);
@@ -352,7 +352,7 @@ class SourceSelectorTest {
         f.machine("rv_mod", registeredType("modb", "enriching"), f.stack(g), Ingredient.of(b));
 
         RecipeIndex index = f.buildIndex();
-        assertEquals(Destination.machine("smelting"),
+        assertEquals(Destination.machine("minecraft:smelting"),
                 SourceSelector.destination(viewFor(index, g, "rv_smelt")),
                 "the registered smelting type keeps its machine destination");
 
@@ -360,6 +360,35 @@ class SourceSelectorTest {
         assertEquals(Tier.PRIMARY, recipeById(root, "rpp:rv_smelt").tier(),
                 "the registered vanilla type keeps the vanilla rank");
         assertEquals(Tier.ALTERNATE, recipeById(root, "rpp:rv_mod").tier());
+    }
+
+    @Test
+    void samePathDifferentNamespaceAreDistinctDestinations() {
+        // Issue #78: two mods' same-path machine types (create:crushing vs
+        // mekanism:crushing) must stay distinct destination classes — they are
+        // different blocks with independently settable priorities (§17.7.2).
+        RecipeIndexFixture f = new RecipeIndexFixture();
+        Item g = f.item("crush_goal");
+        Item a = f.item("crush_a");
+        Item b = f.item("crush_b");
+        f.machine("crush_create", registeredType("create", "crushing"), f.stack(g), Ingredient.of(a));
+        f.machine("crush_mek", registeredType("mekanism", "crushing"), f.stack(g), Ingredient.of(b));
+
+        RecipeIndex index = f.buildIndex();
+        Destination createDest = SourceSelector.destination(viewFor(index, g, "crush_create"));
+        Destination mekanismDest = SourceSelector.destination(viewFor(index, g, "crush_mek"));
+
+        // the full id keeps same-path, different-namespace types apart
+        assertNotEquals(createDest, mekanismDest,
+                "same-path, different-namespace types must not collapse into one destination");
+        assertEquals(Destination.machine("create:crushing"), createDest);
+        assertEquals(Destination.machine("mekanism:crushing"), mekanismDest);
+
+        // no collision: different blocks can coexist
+        ItemNode root = builder(index).buildRoot(AEItemKey.of(g), 2);
+        for (RecipeNode recipe : root.recipes()) {
+            assertFalse(recipe.isCollides(), "distinct destination classes do not collide: " + recipe.recipe().id());
+        }
     }
 
     @Test

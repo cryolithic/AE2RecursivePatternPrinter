@@ -213,17 +213,28 @@ public final class SourceSelector {
         // would otherwise leak into the destination and change every JVM run.
         ResourceLocation id = BuiltInRegistries.RECIPE_TYPE.getKey(view.type());
         if (id != null) {
-            String path = id.getPath();
-            if ("crafting".equals(path)) {
-                return Destination.assembler();
+            // The three special cases are vanilla machines; require the
+            // minecraft namespace so a modded "crafting" type does not route
+            // to the assembler. Machines keep the FULL id so that two mods'
+            // same-path types (create:crushing vs mekanism:crushing) stay
+            // distinct destination classes — they are different blocks with
+            // independently settable priorities (§17.7.2).
+            if ("minecraft".equals(id.getNamespace())) {
+                switch (id.getPath()) {
+                    case "crafting" -> {
+                        return Destination.assembler();
+                    }
+                    case "stonecutting" -> {
+                        return Destination.stonecutter();
+                    }
+                    case "smithing" -> {
+                        return Destination.smithing();
+                    }
+                    default -> {
+                    }
+                }
             }
-            if ("stonecutting".equals(path)) {
-                return Destination.stonecutter();
-            }
-            if ("smithing".equals(path)) {
-                return Destination.smithing();
-            }
-            return Destination.machine(path);
+            return Destination.machine(id.toString());
         }
         // Unregistered type: the registry holds no key, so fall back to the
         // legacy toString-based classification (better a guess than a crash).
@@ -233,16 +244,20 @@ public final class SourceSelector {
         String type = view.type().toString();
         // The type location may or may not carry its namespace (vanilla
         // crafting recipes report "crafting" in this mapping), so match on
-        // the path segment.
-        String path = type.lastIndexOf(':') >= 0 ? type.substring(type.lastIndexOf(':') + 1) : type;
-        if ("crafting".equals(path)) {
-            return Destination.assembler();
-        }
-        if ("stonecutting".equals(path)) {
-            return Destination.stonecutter();
-        }
-        if ("smithing".equals(path)) {
-            return Destination.smithing();
+        // the path segment, guarded by the namespace.
+        int colon = type.lastIndexOf(':');
+        String namespace = colon >= 0 ? type.substring(0, colon) : "minecraft";
+        String path = colon >= 0 ? type.substring(colon + 1) : type;
+        if ("minecraft".equals(namespace)) {
+            if ("crafting".equals(path)) {
+                return Destination.assembler();
+            }
+            if ("stonecutting".equals(path)) {
+                return Destination.stonecutter();
+            }
+            if ("smithing".equals(path)) {
+                return Destination.smithing();
+            }
         }
         return Destination.machine(type);
     }

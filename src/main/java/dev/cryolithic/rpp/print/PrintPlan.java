@@ -391,9 +391,10 @@ public final class PrintPlan {
 
     private static String machineType(Recipe<?> recipe) {
         ResourceLocation key = BuiltInRegistries.RECIPE_TYPE.getKey(recipe.getType());
-        // The path (not the full key) matches SourceSelector.destination, so
-        // the MACHINE batch sort order is consistent with the client display.
-        return key != null ? key.getPath() : recipe.getType().toString();
+        // The full key (not just the path) matches SourceSelector.destination,
+        // so the MACHINE batch sort order is consistent with the client display
+        // and two mods' same-path types stay distinct.
+        return key != null ? key.toString() : recipe.getType().toString();
     }
 
     /**
